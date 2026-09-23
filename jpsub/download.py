@@ -121,7 +121,7 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
         "-f", fmt,
         "--merge-output-format", "mp4",
         "-o", str(out_dir / "%(id)s.%(ext)s"),
-        "--quiet", "--no-warnings",
+        "--newline", "--no-warnings",
         url,
     ])
     # 只匹配文件(排除同名 .jpsub 工作目录),优先视频扩展名

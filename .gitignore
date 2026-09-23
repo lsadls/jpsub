@@ -1,4 +1,5 @@
-.venv/
+.venv*/
+.pytest_cache/
 __pycache__/
 *.egg-info/
 output/
@@ -6,3 +7,5 @@ models/
 .trae/
 project.md
 settings.py
+bin/
+yt-dlp.exe

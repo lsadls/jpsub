@@ -174,8 +174,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "-o",
         "--output",
         type=Path,
-        default=Path("output"),
-        help="保存目录(默认 output)",
+        default=None,
+        help="保存目录(默认 <项目根>/output)",
     )
     d.add_argument("--burn", action="store_true", help="把 ASS 烧录进视频(默认不烧录)")
     d.add_argument(
@@ -188,8 +188,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _output_root() -> Path:
+    """统一产物根目录:项目根(包上一级)下的 output/,与运行时 cwd 无关。"""
+    return Path(__file__).resolve().parent.parent / "output"
+
+
 def _default_work(video: Path) -> Path:
-    return video.with_suffix(".jpsub")
+    return _output_root() / (video.stem + ".jpsub")
 
 
 def _make_engine(args):
@@ -445,7 +450,7 @@ def _burn(video: Path, ass_path: Path) -> Path:
     """用 ffmpeg 把 ASS 字幕烧录进视频,输出 <视频名>.burned.mp4。"""
     import subprocess
 
-    out = video.with_name(video.stem + ".burned.mp4")
+    out = _output_root() / (video.stem + ".burned.mp4")
     # filter 级双重转义(filtergraph 层 + 选项层):反斜杠、引号、分隔符都要转
     escaped = str(ass_path)
     for _ in range(2):
@@ -479,6 +484,7 @@ def _burn(video: Path, ass_path: Path) -> Path:
 def _download(args) -> Path:
     from .download import download
 
+    args.output = args.output or _output_root()
     video = download(args.url, args.output, comment=args.comment)
     args.video = video
     # 已有 ASS 则跳过流水线直接烧录
