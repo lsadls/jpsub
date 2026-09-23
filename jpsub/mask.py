@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +42,13 @@ def _t(s: str) -> float:
         nums = [float(p) for p in parts]
         return (nums[0] * 3600 + nums[1] * 60 + nums[2]) if len(nums) == 3 else nums[0] * 60 + nums[1]
     raise ValueError(f"无法识别的时刻:{s!r}")
+
+
+def _upload_dir() -> Path:
+    """上传图片的临时目录(不污染视频所在目录)。"""
+    d = Path(tempfile.gettempdir()) / "jpsub_mask_img"
+    d.mkdir(exist_ok=True)
+    return d
 
 
 def parse_masks(path: Path) -> list[MaskEntry]:
@@ -91,10 +100,13 @@ def build_filter(entries: list[MaskEntry], base: Path | None = None) -> tuple[st
         en = f"enable='between(t,{m.start:g},{m.end:g})'"
         eff = m.effect
         if eff == "blur" or eff.startswith("blur:"):
-            radius = int(eff.partition(":")[2] or 20)
+            # boxblur=R:2:0:0 只模糊亮度通道(跳过色度,效果更好且不受色度限制);
+            # luma radius 上限还随区域尺寸变化(约 min(w,h)/5),一并钳制
+            radius = max(2, min(58, int(eff.partition(":")[2] or 20),
+                                min(m.w, m.h) // 5))
             chains.append(
                 f"[{cur}]split[sa{i}][sb{i}];"
-                f"[sb{i}]crop={m.w}:{m.h}:{m.x}:{m.y},boxblur={radius}:2[bb{i}];"
+                f"[sb{i}]crop={m.w}:{m.h}:{m.x}:{m.y},boxblur={radius}:2:0:0[bb{i}];"
                 f"[sa{i}][bb{i}]overlay={m.x}:{m.y}:{en}[{nxt}]"
             )
         elif eff.startswith("color:"):
@@ -138,31 +150,48 @@ def apply_masks(video: Path, masks_path: Path, output: Path) -> Path:
 _PAGE = """<!doctype html><html lang=zh><meta charset=utf-8>
 <title>打码选取</title><style>
 body{font:14px sans-serif;margin:12px;background:#1e1e1e;color:#ddd}
-#wrap{position:relative;display:inline-block}canvas{display:block;background:#000;width:min(96vw,145vh);height:auto}
+#main{display:flex;gap:16px;align-items:flex-start}
+#left{flex:0 0 auto}
+#wrap{position:relative;display:inline-block}canvas{display:block;background:#000;width:min(46vw,80vh);height:auto}
 #overlay{position:absolute;left:0;top:0;width:100%;height:100%;cursor:crosshair}
-.bar{margin:6px 0}button,input,select{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 8px}
+#right{flex:1;min-width:0;max-height:calc(100vh - 60px);overflow-y:auto}
+button,input,select{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 8px;font:inherit}
 button{cursor:pointer}button:hover{background:#444}
-table{border-collapse:collapse;margin-top:6px}td,th{border:1px solid #444;padding:2px 8px;text-align:left}
+table{border-collapse:collapse;width:100%}
+th{position:sticky;top:0;background:#1e1e1e;z-index:1}
+td,th{border:1px solid #444;padding:2px 6px;text-align:left}
 tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 .num{cursor:pointer;color:#8cf;text-decoration:underline}
-#msg{color:#fc6;min-height:1.2em}
+#msg{color:#fc6;min-height:1.2em;clear:both}
+.hint{color:#888;margin-top:6px}
 </style>
 <h3>打码选取 - @@TITLE@@</h3>
-<div class=bar>
-时间 <input id=t type=text value=0:00.0 style=width:70px> / @@DURF@@
-<input type=range id=slider min=0 max=@@DUR@@ step=0.1 value=0 style=width:520px>
-效果 <select id=eff><option value=blur>模糊</option><option value=color>纯色</option><option value=image>图片</option></select>
-强度 <input id=strength type=number value=20 min=2 max=80 style=width:56px>
-<input id=color type=color value=#000000>
-<button id=pickimg>选图片…</button><span id=selimg></span>
-<input id=imgfile type=file accept="image/*" style=display:none>
-<button id=save>保存</button><button id=apply>应用打码</button>
-</div>
+<div id=main>
+<div id=left>
 <div id=wrap><canvas id=cv></canvas><div id=overlay></div></div>
-<div id=msg></div>
+<div style=margin-top:4px>
+时间 <input id=t type=text value=0:00.0 style=width:70px> / @@DURF@@
+<input type=range id=slider min=0 max=@@DUR@@ step=0.1 value=0 style=width:220px>
+</div>
+<div style=margin-top:6px>
+效果 <select id=eff><option value=blur>模糊</option><option value=color>纯色</option><option value=image>图片</option></select>
+强度 <input id=strength type=number value=20 min=2 max=58 style=width:56px>
+<input id=color type=color value=#000000>
+<button id=pickimg>选图片…</button><span id=selimg style=color:#888></span>
+<input id=imgfile type=file accept="image/*" style=display:none>
+</div>
+<div style=margin-top:6px>
+<button id=save>保存</button> <button id=apply>应用打码</button>
+<span class=hint style=margin-left:8px>列表序号可点击跳转;拖框新增,框内左键移动/右键调大小</span>
+</div>
+<div class=hint style=margin-top:4px>新条目默认 当前帧 ~ 当前帧+5秒;时间可改(支持 mm:ss.s 或秒数)。<br>
+键盘:←/→ ±0.1秒(Shift ±1秒,Alt ±5秒),PageUp/PageDown ±10秒,Home/End 跳到首尾。</div>
+</div>
+<div id=right>
 <table id=list><tr><th>#</th><th>时间</th><th>区域</th><th>效果</th><th></th></tr></table>
-<p>在画面上拖拽框选;框内<b>左键拖动=移动</b>、<b>右键拖动=调整大小</b>;新条目默认 当前帧 ~ 当前帧+5秒,列表里可改时间(支持 mm:ss.s 或秒数)后回车,点序号跳转。<br>
-键盘:←/→ ±0.1秒(Shift ±1秒,Alt ±5秒),PageUp/PageDown ±10秒,Home/End 跳到首尾。</p>
+</div>
+</div>
+<div id=msg></div>
 <script>
 const W=@@W@@,H=@@H@@,DUR=@@DUR@@;
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
@@ -192,7 +221,8 @@ function draw(){
   for(const m of masks){ if(!active(m))continue;
     const e=m.effect;
     if(e==='blur'||e.startsWith('blur:')){
-      const r=Math.max(2,parseFloat((e.split(':')[1]||20)));
+      const req=parseFloat((e.split(':')[1]||20));
+      const r=Math.max(2,Math.min(58,req,Math.floor(Math.min(m.w,m.h)/5)));
       const sub=document.createElement('canvas');sub.width=m.w;sub.height=m.h;
       sub.getContext('2d').drawImage(tmp,m.x,m.y,m.w,m.h,0,0,m.w,m.h);
       const c=tmp.getContext('2d');c.save();c.filter=`blur(${r}px)`;
@@ -221,12 +251,19 @@ function syncList(){
   const tb=$('list');tb.innerHTML='<tr><th>#</th><th>时间</th><th>区域</th><th>效果</th><th></th></tr>';
   masks.forEach((m,i)=>{
     const tr=document.createElement('tr');if(active(m))tr.className='act';
-    tr.innerHTML=`<td class=num data-i=${i} title=点击跳转>${i+1}</td><td><input value='${fmt(m.start)}' data-k=start data-i=${i} style=width:64px> ~ <input value='${fmt(m.end)}' data-k=end data-i=${i} style=width:64px></td>`+
+    tr.innerHTML=`<td class=num data-i=${i} title=点击跳转>${i+1}</td>`+
+      `<td><input value='${fmt(m.start)}' data-k=start data-i=${i} style=width:64px>`+
+      `<button class=st data-i=${i} title=设为当前时间>←起</button>`+
+      ` ~ <input value='${fmt(m.end)}' data-k=end data-i=${i} style=width:64px>`+
+      `<button class=st data-i=${i} data-k=end title=设为当前时间>止→</button></td>`+
       `<td>${m.x},${m.y} ${m.w}×${m.h}</td><td>${esc(m.effect)}</td><td class=del data-i=${i}>✕</td>`;
     tb.appendChild(tr);
   });
   tb.querySelectorAll('input').forEach(inp=>inp.onchange=()=>{
     const v=parseT(inp.value);if(!isNaN(v))masks[+inp.dataset.i][inp.dataset.k]=v;
+    syncList();draw();save();});
+  tb.querySelectorAll('button.st').forEach(b=>b.onclick=()=>{
+    masks[+b.dataset.i][b.dataset.k||'start']=+t.toFixed(2);
     syncList();draw();save();});
   tb.querySelectorAll('.del').forEach(d=>d.onclick=()=>{masks.splice(+d.dataset.i,1);syncList();draw();save();});
   tb.querySelectorAll('.num').forEach(n=>n.onclick=()=>{setT(masks[+n.dataset.i].start)});
@@ -366,7 +403,9 @@ class _Picker:
 
                     name = Path(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                                 .get("name", [""])[0]).name
-                    fp = picker.masks_path.parent / name
+                    fp = _upload_dir() / name
+                    if not fp.is_file():  # 兼容旧 masks.txt 里存视频目录相对路径的写法
+                        fp = picker.masks_path.parent / name
                     if not name or not fp.exists() or not fp.is_file():
                         self.send_error(404)
                         return
@@ -426,7 +465,7 @@ class _Picker:
         return parse_masks(self.masks_path) if self.masks_path.exists() else []
 
     def _save_upload(self, body: bytes, boundary: bytes) -> str:
-        # 极简 multipart:取第一个二进制段
+        # 极简 multipart:取第一个二进制段;存临时目录,masks.txt 记绝对路径
         parts = body.split(boundary)
         for part in parts:
             if b"Content-Type" not in part or b"filename" not in part:
@@ -434,9 +473,9 @@ class _Picker:
             data = part.partition(b"\r\n\r\n")[2].rsplit(b"\r\n", 1)[0]
             ext = ".png" if b"png" in part[:200] else ".jpg"
             self._img_seq += 1
-            name = f"mask_img_{self._img_seq}{ext}"
-            (self.masks_path.parent / name).write_bytes(data)
-            return name
+            fp = _upload_dir() / f"mask_img_{self._img_seq}{ext}"
+            fp.write_bytes(data)
+            return str(fp)
         raise SystemExit("上传解析失败")
 
     def _apply(self):
@@ -444,9 +483,17 @@ class _Picker:
             self.apply_msg = "应用打码中..."
             out = self.video.with_name(self.video.stem + ".masked.mp4")
             apply_masks(self.video, self.masks_path, out)
-            self.apply_msg = f"完成:{out}"
+            self.apply_msg = f"完成:{out},选择器即将退出"
+            self._shutdown_soon()
         except Exception as e:  # noqa: BLE001
             self.apply_msg = f"失败:{e}"
+
+    def _shutdown_soon(self):
+        """给页面留 3 秒拉取最终状态,然后关闭服务(jpsub mask 进程随之退出)。"""
+        def _stop():
+            self.srv.shutdown()
+            self.srv.server_close()
+        threading.Timer(3, _stop).start()
 
 
 def _entries_json(entries: list[MaskEntry]) -> str:
@@ -487,17 +534,26 @@ def frame_jpeg(video: Path, t: float) -> bytes:
     return r.stdout
 
 
+def default_masks_path(video: Path) -> Path:
+    """masks.txt 默认放在视频工作目录 <视频名>.jpsub/ 下。"""
+    return video.with_suffix(".jpsub") / "masks.txt"
+
+
 def picker(video: Path, masks_path: Path | None = None) -> None:
-    """启动浏览器框选取景器;masks_path 默认为视频同目录 masks.txt。"""
+    """启动浏览器框选取景器;masks.txt 默认在视频工作目录 <视频名>.jpsub/ 下。"""
     import threading
     import webbrowser
 
     if not video.exists():
         raise SystemExit(f"错误:视频不存在:{video}")
-    masks_path = masks_path or video.with_name("masks.txt")
+    masks_path = masks_path or default_masks_path(video)
+    masks_path.parent.mkdir(parents=True, exist_ok=True)
+    # 清理旧版本遗留在视频目录里的上传图片(现在统一存临时目录)
+    for old in video.parent.glob("mask_img_*"):
+        old.unlink(missing_ok=True)
     p = _Picker(video, masks_path)
     url = f"http://127.0.0.1:{p.srv.server_address[1]}/"
-    print(f"打码选取器:{url}(浏览器未自动打开时手动访问;Ctrl+C 退出)")
+    print(f"打码选取器:{url}(浏览器未自动打开时手动访问;Ctrl+C 退出;应用打码完成后自动退出)")
     threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
         p.srv.serve_forever()

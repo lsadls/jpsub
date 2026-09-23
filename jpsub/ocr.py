@@ -1,13 +1,49 @@
 """本地日文字幕 OCR(PaddleOCR,检测+识别,无字返回空串不幻觉)。"""
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
+import warnings
 from pathlib import Path
 
 from . import settings
 
-_LANG = "japan"          # 日文
 _SCORE = 0.5             # 置信度阈值,低于则丢弃该行
+
+# Paddle 每次启动都会打印的已知无害信息/警告,过滤掉(其余输出正常透出)
+_KNOWN_NOISE = (
+    "ccache",                       # 未装 ccache 的提示(含 shell 的 which 报错)
+    "OMP_NUM_THREADS",              # 多线程提示,本就刻意开启多线程
+    "Creating model:",
+    "Model files already exist",
+    "Using official model",
+)
+
+
+@contextlib.contextmanager
+def _quiet_paddle():
+    """fd 级临时重定向 stdout/stderr,丢弃已知噪音行,其余结束后原样输出。"""
+    import tempfile
+
+    with tempfile.TemporaryFile("w+b") as tf1, tempfile.TemporaryFile("w+b") as tf2:
+        saved1, saved2 = os.dup(1), os.dup(2)
+        os.dup2(tf1.fileno(), 1)
+        os.dup2(tf2.fileno(), 2)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                yield
+        finally:
+            os.dup2(saved1, 1)
+            os.dup2(saved2, 2)
+            os.close(saved1)
+            os.close(saved2)
+            for f, stream in ((tf1, sys.stdout), (tf2, sys.stderr)):
+                f.seek(0)
+                for line in f.read().decode("utf-8", "replace").splitlines():
+                    if line.strip() and not any(p in line for p in _KNOWN_NOISE):
+                        print(line, file=stream)
 
 # 检测/识别模型在 settings.OCR_DET_MODEL/OCR_REC_MODEL 里配置
 # (实测 medium 在检测和识别上提升很小,但速度慢得多,不建议)
@@ -33,18 +69,18 @@ class PaddleOcrEngine:
 
     def __init__(self) -> None:
         threads = _prepare_env()
-        from paddleocr import PaddleOCR
+        with _quiet_paddle():
+            from paddleocr import PaddleOCR
 
-        self._ocr = PaddleOCR(
-            lang=_LANG,
-            text_detection_model_name=settings.OCR_DET_MODEL,
-            text_recognition_model_name=settings.OCR_REC_MODEL,
-            cpu_threads=threads,
-            enable_mkldnn=False,
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-        )
+            self._ocr = PaddleOCR(
+                text_detection_model_name=settings.OCR_DET_MODEL,
+                text_recognition_model_name=settings.OCR_REC_MODEL,
+                cpu_threads=threads,
+                enable_mkldnn=False,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
 
     def _predict(self, image_path: Path) -> list[tuple[int, str]]:
         """对一张图做检测+识别,返回 [(行顶部 y, 文本), ...] 按 y 排序。"""

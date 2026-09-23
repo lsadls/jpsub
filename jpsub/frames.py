@@ -22,6 +22,7 @@ def extract_frames(
     crop: str | float = "0.75:0.03:0.03:0.03",
     start: float | None = None,
     end: float | None = None,
+    quiet: bool = False,
 ) -> list[Path]:
     """裁剪画面字幕区后按 fps 抽帧。
 
@@ -55,7 +56,9 @@ def extract_frames(
             if not 0 < crop_ratio <= 1:
                 raise ValueError(f"crop_ratio 必须在 (0,1] 内,得到 {crop_ratio}")
             vf = f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),fps={fps}"
-    cmd = [settings.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-stats", "-y"]
+    cmd = [settings.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
+    if not quiet:
+        cmd.append("-stats")  # 进度统计(stderr),批量模式由状态板统一展示故省略
     if start:
         cmd += ["-ss", str(start)]
     cmd += ["-i", str(video)]
@@ -146,7 +149,7 @@ def _mask_one(p: Path) -> Image.Image:
         return text_mask(im)
 
 
-def _parallel(fn, paths: list[Path], label: str):
+def _parallel(fn, paths: list[Path], label: str, quiet: bool = False):
     """多进程并行生成掩膜,吃满逻辑核;帧少时退回单进程。"""
     n = len(paths)
     workers = min(os.cpu_count() or 1, n)
@@ -159,22 +162,24 @@ def _parallel(fn, paths: list[Path], label: str):
         for i, res in enumerate(ex.map(fn, paths, chunksize=chunk)):
             out[i] = res
             done += 1
-            _progress(done, n, label)
-    print()
+            if not quiet:
+                _progress(done, n, label)
+    if not quiet:
+        print()
     return out
 
 
-def text_core_masks(paths: list[Path]) -> tuple[list[Image.Image], list[Image.Image]]:
+def text_core_masks(paths: list[Path], quiet: bool = False):
     """批量生成主掩膜与核心掩膜(多进程并行)。"""
-    pairs = _parallel(_mask_pair, paths, "生成掩膜")
+    pairs = _parallel(_mask_pair, paths, "生成掩膜", quiet)
     masks = [m for m, _ in pairs]
     cores = [c for _, c in pairs]
     return masks, cores
 
 
-def text_masks(paths: list[Path]) -> list[Image.Image]:
+def text_masks(paths: list[Path], quiet: bool = False) -> list[Image.Image]:
     """批量生成"文字掩膜":每帧只算一次,供相邻比较与去重复用(多进程并行)。"""
-    return _parallel(_mask_one, paths, "生成掩膜")
+    return _parallel(_mask_one, paths, "生成掩膜", quiet)
 
 
 def strip_static(masks: list[Image.Image], ratio: float = 0.8) -> list[Image.Image]:

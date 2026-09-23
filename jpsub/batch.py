@@ -14,6 +14,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sys
@@ -22,6 +23,8 @@ import threading
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait
+from multiprocessing import Manager
+from queue import Empty
 from pathlib import Path
 
 _NO_STAGE_A = ("translate", "render", "status")  # 只收 work 的子命令,无下载/抽帧
@@ -46,7 +49,7 @@ def _save_preview_frames(ns, work: Path) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="jpsub_"))
     try:
         if getattr(ns, "selected_only", False):
-            paths, spans, _m, _c, _fd, _off = _select_keyframes(ns, tmp)
+            paths, spans, _m, _c, _fd, _off = _select_keyframes(ns, tmp, quiet=True)
             saved = [paths[sp[2]] for sp in spans]
         else:
             saved = fr.extract_frames(
@@ -61,14 +64,16 @@ def _save_preview_frames(ns, work: Path) -> int:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _prepare(line: str):
+def _prepare(line: str, q=None):
     """阶段A(子进程):下载视频 + 抽帧筛选,关键帧与元数据落工作目录 _batch/。
 
     translate/render/status 无阶段A,直接透传给阶段C;
     预览模式只抽帧存图,不进 B/C;--burn 且已有 ASS 时直接烧录。
+    q 为 multiprocessing 队列,回传 (line, 消息) 给主进程刷状态板。
     """
     try:
         ns = _parse_line(line)
+        ns.batch = True  # 阶段B/C 静默散行输出,由主进程状态板统一展示
         cmd = ns.command
         if cmd in _NO_STAGE_A:
             return line, ns, None, None, 0, None
@@ -79,7 +84,13 @@ def _prepare(line: str):
         if cmd == "download":
             if ns.cookies_from_browser:
                 dl.settings.COOKIES_FROM_BROWSER = ns.cookies_from_browser
-            video = dl.download(ns.url, ns.output or _output_root(), comment=ns.comment)
+            video = dl.download(
+                ns.url,
+                ns.output or _output_root(),
+                comment=ns.comment,
+                quiet=True,
+                progress=(lambda msg: q.put((line, msg))) if q else None,
+            )
         else:  # run / extract
             video = ns.video
 
@@ -108,7 +119,9 @@ def _prepare(line: str):
         bdir.mkdir(exist_ok=True)
         tmp = Path(tempfile.mkdtemp(prefix="jpsub_"))
         try:
-            paths, spans, masks, _cores, _frame_dur, offset = _select_keyframes(ns, tmp)
+            paths, spans, masks, _cores, _frame_dur, offset = _select_keyframes(
+                ns, tmp, quiet=True
+            )
             frames, hashes = [], []
             for _s, _e, k in spans:
                 p = paths[k]
@@ -136,19 +149,18 @@ def _prepare(line: str):
 
 
 class _Board:
-    """每个视频一行的状态板:阶段 + 进度,失败原因单独打印且不影响其他。"""
+    """每任务固定一行、原地刷新:阶段 + 总数,失败等事件打到板下方。"""
 
     def __init__(self, lines: list[str]):
         self.lock = threading.Lock()
         self.rows: list[str] = []
         self.state: dict[str, dict] = {}
-        self.order: list[str] = []
-        for i, ln in enumerate(lines, 1):
-            self.order.append(ln)
+        self.order: list[str] = list(lines)
+        for ln in lines:
             self.state[ln] = {"stage": self._initial_stage(ln), "info": ""}
-            self.rows.append(
-                f"[{i}/{len(lines)}] {self._short(ln)} | {self.state[ln]['stage']}"
-            )
+            self.rows.append(self._fmt(ln))
+        self._drawn = False
+        self._last: dict[str, str] = {}  # 非终端模式:上次打印的阶段
 
     @staticmethod
     def _initial_stage(ln: str) -> str:
@@ -158,29 +170,50 @@ class _Board:
 
     @staticmethod
     def _short(ln: str) -> str:
-        s = ln.split()[0] if ln.split() else ln
+        """任务标签:优先取行内 sm 号/本地文件名,取不到用首个 token。"""
+        m = re.search(r"\b(?:sm|so|nm)(\d{5,})", ln)
+        if m:
+            return "sm" + m.group(1)
+        toks = ln.split()
+        for t in toks[1:]:
+            if re.fullmatch(r"\d{5,}", t):  # 裸视频 id
+                return "sm" + t
+        for t in toks[1:]:  # 跳过子命令,找含路径分隔符或扩展名的本地文件
+            p = Path(t)
+            if "/" in t or p.suffix:
+                return p.name if len(p.name) <= 40 else p.name[:37] + "..."
+        s = toks[0] if toks else ln
         return s if len(s) <= 40 else s[:37] + "..."
+
+    def _fmt(self, line: str) -> str:
+        st = self.state[line]
+        row = f"[{self._short(line)}] {st['stage']}"
+        if st["info"]:
+            row += f" | {st['info']}"
+        return row
 
     def update(self, line: str, stage: str | None = None, info: str | None = None):
         with self.lock:
             st = self.state[line]
-            if stage is not None:
+            if stage is not None and stage != st["stage"]:
                 st["stage"] = stage
+                st["info"] = ""  # 换阶段时清掉上一阶段的进度信息
             if info is not None:
                 st["info"] = info
-            i = self.order.index(line) + 1
-            self.rows[i - 1] = (
-                f"[{i}/{len(self.order)}] {self._short(line)} | {st['stage']}"
-            )
-            if st["info"]:
-                self.rows[i - 1] += f" | {st['info']}"
+            self.rows[self.order.index(line)] = self._fmt(line)
             self._draw()
 
     def _draw(self):
+        """终端下整块原地重绘;非终端只在阶段变化时逐行打印(避免百分比刷屏)。"""
         if not sys.stdout.isatty():
+            for line, row in zip(self.order, self.rows):
+                stage = self.state[line]["stage"]
+                if self._last.get(line) != stage:
+                    self._last[line] = stage
+                    print(row, flush=True)
             return
         block = "\n".join(self.rows)
-        if not hasattr(self, "_drawn"):
+        if not self._drawn:
             print(block, flush=True)
             self._drawn = True
         else:
@@ -188,11 +221,15 @@ class _Board:
             sys.stdout.flush()
 
     def event(self, msg: str):
-        """状态板下方的追加日志行(事件/错误)。"""
+        """板下方的追加日志(事件/错误),不影响各行内容。"""
         with self.lock:
-            if sys.stdout.isatty() and hasattr(self, "_drawn"):
-                sys.stdout.write("\n")
-            print(msg, flush=True)
+            if sys.stdout.isatty() and self._drawn:
+                # 先抹掉整块,打印事件后再把板画回来,保持光标在板尾
+                sys.stdout.write(f"\033[{len(self.rows)}A\033[J")
+                print(msg, flush=True)
+                print("\n".join(self.rows), flush=True)
+            else:
+                print(msg, flush=True)
 
 
 def run_script(args) -> None:
@@ -215,7 +252,8 @@ def run_script(args) -> None:
 
     dl_pool = ProcessPoolExecutor(max_workers=dl_workers)
     tr_pool = ThreadPoolExecutor(max_workers=tr_workers)
-    dl_futs = {dl_pool.submit(_prepare, ln): ln for ln in lines}
+    q = Manager().Queue()  # 阶段A子进程 -> 主进程 的进度消息 (line, msg)
+    dl_futs = {dl_pool.submit(_prepare, ln, q): ln for ln in lines}
     tr_futs: dict = {}
     queue: collections.deque = collections.deque()  # (line, ns, work) 待 OCR
     engine = None
@@ -224,6 +262,14 @@ def run_script(args) -> None:
     done_cnt = 0
     try:
         while dl_futs or queue or tr_futs:
+            # 收割阶段A进度消息(下载百分比等)
+            while True:
+                try:
+                    line, msg = q.get_nowait()
+                    if line in board.state:
+                        board.update(line, None, msg)
+                except Empty:
+                    break
             # 收割翻译/渲染结果
             for f in [f for f in tr_futs if f.done()]:
                 line = tr_futs.pop(f)
@@ -232,10 +278,13 @@ def run_script(args) -> None:
                     ok = False
                     failed += 1
                     board.update(line, "失败", "见下方错误")
-                    board.event(f"[失败] {line}\n{exc}")
+                    board.event(
+                        f"[失败] {line}\n{''.join(traceback.format_exception(exc))}"
+                    )
                 else:
                     done_cnt += 1
-                    board.update(line, "完成")
+                    out = f.result()
+                    board.update(line, "完成", Path(out).name if out else "")
             # 阶段B:按下载完成顺序依次 OCR(单实例),完成即进翻译队列
             if queue:
                 line, ns, work = queue.popleft()
@@ -245,20 +294,19 @@ def run_script(args) -> None:
                     if engine is None:
                         board.event("加载 OCR 模型...")
                         engine = _make_engine(ns)
-                    board.update(line, "OCR")
+                    meta = json.loads((Path(work) / "_batch" / "meta.json").read_text())
+                    board.update(line, "OCR", f"0/{len(meta['frames'])} 帧")
                     ocr_batch_stage(
                         ns,
                         engine,
                         Path(work),
+                        quiet=True,
                         progress=lambda d, t, _l=line: board.update(
-                            _l, None, f"{d}/{t} 画面"
+                            _l, None, f"{d}/{t} 帧"
                         ),
                     )
                     board.update(line, "翻译/渲染")
                     ns.work = Path(work)
-                    ns.tr_progress = lambda d, t, _l=line: board.update(
-                        _l, None, f"{d}/{t} 句"
-                    )
                     tr_futs[tr_pool.submit(_stage_c, ns, work)] = line
                 except Exception:
                     ok = False
@@ -285,7 +333,9 @@ def run_script(args) -> None:
                         tr_futs[tr_pool.submit(_stage_c, ns, work)] = line
                     else:  # 预览存帧 / 直接烧录:已在阶段A完成
                         done_cnt += 1
-                        board.update(line, "完成", f"{keyframes} 帧" if keyframes else "")
+                        board.update(
+                            line, "完成", f"{keyframes} 帧" if keyframes else ""
+                        )
             else:
                 time.sleep(0.2)  # 只剩翻译线程在跑,避免空转
     finally:
@@ -306,10 +356,10 @@ def _stage_c(ns, work):
     if work:
         ns.work = Path(work)
     if ns.command == "translate":
-        _translate(ns)
-    elif ns.command == "render":
-        _render(ns)
-    elif ns.command == "status":
+        return _translate(ns)
+    if ns.command == "render":
+        return _render(ns)
+    if ns.command == "status":
         _status(ns)
-    else:
-        _maybe_translate_render(ns, Path(work))
+        return None
+    return _maybe_translate_render(ns, Path(work))

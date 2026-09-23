@@ -10,6 +10,7 @@ import os
 import re
 import time
 import urllib.request
+from contextlib import nullcontext
 from pathlib import Path
 
 from tqdm import tqdm
@@ -198,7 +199,9 @@ def translate_file(
     *,
     batch_size: int = 10,
     comment: str | None = None,
+    glossary: dict[str, str] | None = None,
     progress=None,
+    quiet: bool = False,
 ) -> int:
     """分批翻译,结果按时间轴键追加写入 out_path;返回本次新翻句数。
 
@@ -228,11 +231,27 @@ def translate_file(
         system += (
             f"\n\n视频背景描述:{comment}\n翻译时请结合该描述选择合适的语气与用词。"
         )
+    if glossary:
+        # 名词对照表随系统提示词一次性发送(每轮对话只发一次,前缀命中 prompt cache)
+        system += (
+            "\n\n名词对照表(必须严格遵守,原文出现以下词时译成对应中文):\n"
+            + "\n".join(f"{k} → {v}" for k, v in glossary.items())
+        )
     messages: list[dict] = [{"role": "system", "content": system}]
     new_text = 0
+    # 按文本长度动态收缩批大小:每批字符总量不超过 BATCH_CHAR_TARGET,
+    # 长句(如博客体字幕)自动减少每批句数,避免单批过长导致漏行/截断
+    if todo:
+        avg_len = sum(len(t) for _, t in todo) / len(todo)
+        if avg_len > 0:
+            by_chars = max(1, round(settings.BATCH_CHAR_TARGET / avg_len))
+            if by_chars < batch_size:
+                if not quiet:
+                    print(f"句子平均 {avg_len:.0f} 字,批大小 {batch_size} -> {by_chars}")
+                batch_size = min(batch_size, by_chars)
     with (
         out_path.open("a", encoding="utf-8") as f,
-        tqdm(total=len(todo), unit="句", desc="翻译中") as bar,
+        (tqdm(total=len(todo), unit="句", desc="翻译中") if not quiet else nullcontext()) as bar,
     ):
         for off in range(0, len(todo), batch_size):
             batch = todo[off : off + batch_size]
@@ -275,12 +294,14 @@ def translate_file(
                 got = [""] * len(batch)
             for (i, _src), zh in zip(batch, got):
                 if not zh:  # 缺行兜底:写入未译占位标记(多为内容审查拦截),便于人工定位
-                    print(f"警告:{i} 未返回译文,已在 out 标记 {UNTRANSLATED_MARK}")
+                    if not quiet:
+                        print(f"警告:{i} 未返回译文,已在 out 标记 {UNTRANSLATED_MARK}")
                     zh = UNTRANSLATED_MARK
                 f.write(f"{i}\t{zh}\n")  # 写回时带上时间轴键
-            f.flush()
+                f.flush()
             new_text += len(batch)
-            bar.update(len(batch))
+            if not quiet:
+                bar.update(len(batch))
             if progress:
                 progress(min(off + len(batch), len(todo)), len(todo))
     return new_text

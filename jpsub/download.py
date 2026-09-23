@@ -44,10 +44,40 @@ def _cookies_args() -> list[str]:
     )
 
 
-def _run_ytdlp(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
-    """调用外部 yt-dlp(Windows 用项目根目录 yt-dlp.exe,Linux 用系统 yt-dlp)。"""
+def _run_ytdlp(
+    args: list[str], *, check: bool = True, quiet: bool = False, progress=None
+) -> subprocess.CompletedProcess:
+    """调用外部 yt-dlp(Windows 用项目根目录 yt-dlp.exe,Linux 用系统 yt-dlp)。
+
+    quiet=True 时不打印进度/日志;若提供 progress 则解析下载百分比回调,
+    按当前目标文件名区分视频/音频流,回调形如 progress("视频 43%")。
+    失败时把 stderr 抛出。
+    """
     cmd = [settings.binary("yt-dlp"), *_cookies_args(), *_proxy_args(), *args]
-    return subprocess.run(cmd, check=check)
+    if not quiet:
+        return subprocess.run(cmd, check=check)
+    if progress:
+        cmd.append("--newline")  # 管道下逐行输出进度,便于解析百分比
+    import tempfile
+
+    stream = ""  # 当前下载的流:"视频"/"音频"(双流按 Destination 行切换)
+    with tempfile.TemporaryFile("w+") as errf:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True)
+        for line in p.stdout:
+            if "[download] Destination:" in line:
+                if ".fvideo" in line:
+                    stream = "视频"
+                elif ".faudio" in line:
+                    stream = "音频"
+            if progress:
+                m = re.search(r"\[download\]\s+([\d.]+)%", line)
+                if m:
+                    progress(f"{stream} {float(m.group(1)):.0f}%".strip())
+        p.wait()
+        if check and p.returncode != 0:
+            errf.seek(0)
+            raise SystemExit(f"yt-dlp 下载失败:\n{errf.read().strip()}")
+        return subprocess.CompletedProcess(cmd, p.returncode)
 
 
 def _extract_info(url: str) -> dict:
@@ -116,11 +146,24 @@ def _pick_formats(info: dict) -> tuple[dict | None, dict | None]:
     return video, audio
 
 
-def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
+def download(
+    url: str,
+    out_dir: Path,
+    *,
+    comment: str | None = None,
+    quiet: bool = False,
+    progress=None,
+) -> Path:
     """下载视频(按 settings.NICO_VIDEO_QUALITY/NICO_AUDIO_QUALITY)并合并,返回视频文件路径。
 
     comment 为视频描述,写入 <视频>.jpsub/comment.txt 供翻译提示使用。
+    quiet=True 时不打印任何过程信息(批量模式由状态板统一展示);
+    quiet 下 progress("视频 43%"/"音频 88%") 回调双流下载进度。
     """
+
+    def _say(msg: str):
+        if not quiet:
+            print(msg)
     vid = extract_video_id(url)
     if vid and not url.lower().startswith("http"):
         url = f"https://www.nicovideo.jp/watch/{vid}"
@@ -131,13 +174,13 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
     name = _safe_title(info, vid)
     if audio:
         fmt = f"{video['format_id']}+{audio['format_id']}"
-        print(
+        _say(
             f"选定格式:{video['format_id']}({video.get('height')}p)"
             f" + {audio['format_id']}({audio.get('abr')}kbps)"
         )
     else:
         fmt = video["format_id"]
-        print(f"选定格式:{fmt}(无独立音频流)")
+        _say(f"选定格式:{fmt}(无独立音频流)")
     out_dir.mkdir(parents=True, exist_ok=True)
     _run_ytdlp([
         "-f", fmt,
@@ -145,7 +188,7 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
         "-o", str(out_dir / f"{name}.%(ext)s"),
         "--no-warnings",
         url,
-    ])
+    ], quiet=quiet, progress=progress)
     # 只匹配文件(排除同名 .jpsub 工作目录),优先视频扩展名
     out_file = next(
         (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(out_dir.glob(f"{name}{ext}"))),
@@ -157,6 +200,6 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
         comment_path = out_file.parent / (out_file.stem + ".jpsub") / "comment.txt"
         comment_path.parent.mkdir(parents=True, exist_ok=True)
         comment_path.write_text(comment, encoding="utf-8")
-        print(f"视频描述:{comment} -> {comment_path}")
-    print(f"下载完成:{out_file}")
+        _say(f"视频描述:{comment} -> {comment_path}")
+    _say(f"下载完成:{out_file}")
     return out_file

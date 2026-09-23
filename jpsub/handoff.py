@@ -116,7 +116,9 @@ def read_segments(path: Path) -> list[Segment]:
 
 
 def read_meta(path: Path) -> dict:
-    """读 segments.json 里的翻译元信息(comment)。旧格式返回空。"""
+    """读 segments.json 里的翻译元信息(comment)。旧格式/文件缺失返回空。"""
+    if not path.exists():
+        return {}
     data = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(data, list):
         return {}

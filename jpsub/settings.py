@@ -49,6 +49,7 @@ SETTLE_FRAMES = 1
 MAX_RUN = 10
 SIMILARITY = 0.85
 BATCH_SIZE = 30
+BATCH_CHAR_TARGET = 1500  # 动态批大小:每批翻译的字符总量上限,长句自动减少批内句数
 
 FONT = "微软雅黑"
 FONT_SIZE = 20

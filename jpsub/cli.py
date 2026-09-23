@@ -140,6 +140,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         a.add_argument("--api-key", help="默认 $JPSUB_API_KEY/$OPENAI_API_KEY")
         a.add_argument("--model", help="模型名,默认 $JPSUB_MODEL")
         a.add_argument(
+            "--glossary",
+            type=Path,
+            default=None,
+            help="名词对照表文件(默认读 ~/.jpsub/glossary.txt 与工作目录 glossary.txt)",
+        )
+        a.add_argument(
             "--batch-size",
             type=int,
             default=settings.BATCH_SIZE,
@@ -211,13 +217,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     m = sub.add_parser("mask", help="打码选取器:鼠标框选区域,生成 masks.txt")
     m.add_argument("video", type=Path)
     m.add_argument(
-        "--masks", type=Path, default=None, help="打码清单(默认 <视频>masks.txt)"
+        "--masks", type=Path, default=None, help="打码清单(默认 <视频工作目录>/masks.txt)"
     )
 
     ma = sub.add_parser("maskapply", help="把 masks.txt 的打码应用到视频")
     ma.add_argument("video", type=Path)
-    ma.add_argument("masks", type=Path, nargs="?", default=None, help="默认 <视频>masks.txt")
+    ma.add_argument("masks", type=Path, nargs="?", default=None, help="默认 <视频工作目录>/masks.txt")
     ma.add_argument("-o", "--output", type=Path, default=None, help="默认 <视频>.masked.mp4")
+
+    ed = sub.add_parser("edit", help="浏览器调整译文:编辑/删除/新增 translate-out.txt 条目")
+    ed.add_argument("target", type=Path, help="工作目录(如 output/sm123.jpsub)或视频文件")
 
     d = sub.add_parser(
         "download",
@@ -275,13 +284,15 @@ def _ocr_one(engine, path: Path) -> str:
     return engine.run(path)
 
 
-def _ocr_many(engine, paths: list[Path]) -> list[str]:
+def _ocr_many(engine, paths: list[Path], quiet: bool = False) -> list[str]:
     out: list[str] = []
     n = len(paths)
     for i, p in enumerate(paths):
         out.append(_ocr_one(engine, p))
-        print(f"\rOCR {i + 1}/{n}", end="", flush=True)
-    print()
+        if not quiet:
+            print(f"\rOCR {i + 1}/{n}", end="", flush=True)
+    if not quiet:
+        print()
     return out
 
 
@@ -305,7 +316,7 @@ def _ocr_dedup(engine, items: list[tuple[bytes, Path]]) -> list[str]:
     return [mapping[k] for k in keys]
 
 
-def _select_keyframes(args, extract_dir: Path):
+def _select_keyframes(args, extract_dir: Path, quiet: bool = False):
     """抽帧 -> 文字掩膜 -> 停顿触发筛选关键帧。
 
     返回 (paths, spans, masks, cores, frame_dur, offset),供单视频与批量模式复用。
@@ -317,16 +328,18 @@ def _select_keyframes(args, extract_dir: Path):
         crop=args.crop,
         start=args.start,
         end=args.end,
+        quiet=quiet,
     )
     if not paths:
         raise SystemExit("错误:没有抽到任何帧,检查视频与 --fps/--crop/--start/--end")
     frame_dur = 1.0 / args.fps
     offset = args.start or 0.0  # 时间轴对齐到原始视频
-    print(f"抽到 {len(paths)} 帧 (crop={args.crop})")
+    if not quiet:
+        print(f"抽到 {len(paths)} 帧 (crop={args.crop})")
 
     # 停顿触发选关键帧,短停顿合并,只识别每段静止末帧
     # cores:高门槛文字核心掩膜,换段判定不受亮背景噪声稀释
-    masks, cores = frames.text_core_masks(paths)
+    masks, cores = frames.text_core_masks(paths, quiet=quiet)
     masks, cores = frames.strip_static(masks), frames.strip_static(cores)
     diffs = trigger.mask_diffs(masks)
     spans = trigger.select_keyframes(
@@ -430,16 +443,24 @@ def _export_handoff(args, segs: list[segment.Segment], work: Path) -> Path:
         work / "segments.json",
         comment=_with_guide_comment(comment, getattr(args, "guide_comment", False)),
     )
-    print(f"工作目录:{work}")
-    todo = handoff.pending_texts(segs, cache)
-    print(f"待翻译 {len(todo)} 句 -> {work / 'translate-in.txt'}")
-    if todo:
-        print("默认将自动调用 AI 翻译并渲染;加 --notrans 可停在此步")
+    if not getattr(args, "batch", False):
+        print(f"工作目录:{work}")
+        todo = handoff.pending_texts(segs, cache)
+        print(f"待翻译 {len(todo)} 句 -> {work / 'translate-in.txt'}")
+        if todo:
+            print("默认将自动调用 AI 翻译并渲染;加 --notrans 可停在此步")
     return work
 
 
-def ocr_batch_stage(args, engine, work: Path, progress=None) -> Path:
-    """批量模式阶段B:读取 _batch 元数据,OCR 关键帧,产出待翻译文件。"""
+def ocr_batch_stage(args, engine, work: Path, progress=None, quiet=False) -> Path:
+    """批量模式阶段B:读取 _batch 元数据,OCR 关键帧,产出待翻译文件。
+
+    quiet=True 时不打印中间统计(缓存/去重/合并),由调用方统一展示。
+    """
+
+    def _say(msg: str):
+        if not quiet:
+            print(msg)
     bdir = work / "_batch"
     meta = json.loads((bdir / "meta.json").read_text(encoding="utf-8"))
     fps = meta["fps"]
@@ -458,21 +479,21 @@ def ocr_batch_stage(args, engine, work: Path, progress=None) -> Path:
             ocr_cache = {}
     todo = [(h, p) for h, p in zip(hashes, frames) if p.name not in ocr_cache]
     if len(todo) < len(frames):
-        print(f"OCR 缓存:复用 {len(frames) - len(todo)} 帧,新识别 {len(todo)} 帧")
+        _say(f"OCR 缓存:复用 {len(frames) - len(todo)} 帧,新识别 {len(todo)} 帧")
     # 按掩膜哈希去重:同一画面只识别一次
     uniq: dict[str, Path] = {}
     for h, p in todo:
         uniq.setdefault(h, p)
-    # 分批识别,便于批量模式上报进度
+    # 逐帧识别,批量模式经 progress 上报实时进度
     uniq_paths = list(uniq.values())
     fresh: list[str] = []
-    for i in range(0, len(uniq_paths), 8):
-        fresh.extend(_ocr_many(engine, uniq_paths[i : i + 8]))
+    for i, p in enumerate(uniq_paths):
+        fresh.append(_ocr_one(engine, p))
         if progress:
-            progress(min(i + 8, len(uniq_paths)), len(uniq_paths))
+            progress(i + 1, len(uniq_paths))
     saved = len(todo) - len(uniq)
     if saved:
-        print(f"重复画面去重:识别 {len(uniq)}/{len(todo)} 帧,省 {saved} 次 OCR")
+        _say(f"重复画面去重:识别 {len(uniq)}/{len(todo)} 帧,省 {saved} 次 OCR")
     text_of = dict(zip(uniq.keys(), fresh))
     for h, p in todo:
         ocr_cache[p.name] = text_of[h]
@@ -487,7 +508,7 @@ def ocr_batch_stage(args, engine, work: Path, progress=None) -> Path:
         for i in range(s, e + 1):
             timed.append((offset + i * frame_dur, text))
     segs = segment.build_segments(timed, frame_dur=frame_dur, threshold=args.similarity)
-    print(f"合并为 {len(segs)} 条字幕")
+    _say(f"合并为 {len(segs)} 条字幕")
     work = _export_handoff(args, segs, work)
     shutil.rmtree(bdir, ignore_errors=True)
     return work
@@ -589,9 +610,12 @@ def _render(args) -> Path:
     )
     if out_text:
         count, deleted = handoff.import_translations(out_file, cache, src_map)
-        print(f"导入译文 {count} 条")
+        quiet = getattr(args, "batch", False)
+        if not quiet:
+            print(f"导入译文 {count} 条")
         if deleted:
-            print(f"检测到 {len(deleted)} 行被删除,对应字幕将移除")
+            if not quiet:
+                print(f"检测到 {len(deleted)} 行被删除,对应字幕将移除")
             deleted_set = set(deleted)
             segs = [s for s in segs if s.text not in deleted_set]
         # 用 out 的最新译文刷新 segments 的 tr 快照并落盘
@@ -617,7 +641,8 @@ def _render(args) -> Path:
     tr_map = handoff.resolve(segs, cache)
     if not tr_map:
         # 完全没有译文:用 in 文件的日文原文生成字幕
-        print("没有译文,改用日文原文生成字幕")
+        if not getattr(args, "batch", False):
+            print("没有译文,改用日文原文生成字幕")
         tr_map = {s.text: s.text for s in segs if s.text}
     ass.write_ass(
         segs,
@@ -627,11 +652,35 @@ def _render(args) -> Path:
         font_size=args.font_size,
         max_chars=args.max_chars,
     )
-    print(f"完成:{out}")
+    if not getattr(args, "batch", False):
+        print(f"完成:{out}")
     return out
 
 
+def _load_glossary(work: Path, args) -> dict[str, str]:
+    """加载名词对照表:全局 ~/.jpsub/glossary.txt + 工作目录 glossary.txt,
+    --glossary 指定的文件优先级最高(后加载覆盖同名词条)。"""
+    paths = [Path.home() / ".jpsub" / "glossary.txt", work / "glossary.txt"]
+    custom = getattr(args, "glossary", None)
+    if custom:
+        paths.append(custom)
+    gloss: dict[str, str] = {}
+    for p in paths:
+        if not p.exists():
+            continue
+        for ln in p.read_text(encoding="utf-8").splitlines():
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                continue
+            k, _, v = ln.partition("\t")
+            k, v = k.strip(), v.strip()
+            if k and v:
+                gloss[k] = v
+    return gloss
+
+
 def _translate(args) -> Path:
+    quiet = getattr(args, "batch", False)
     in_path = args.work / "translate-in.txt"
     if not in_path.exists():
         raise SystemExit(f"错误:找不到 {in_path}")
@@ -642,6 +691,9 @@ def _translate(args) -> Path:
         comment = _load_meta(args.work).get("comment")
     # --guide-comment 启用时追加工况说明,引导委婉翻译以降低内容审查拦截
     comment = _with_guide_comment(comment, getattr(args, "guide_comment", False))
+    glossary = _load_glossary(args.work, args)
+    if glossary and not quiet:
+        print(f"名词对照表:{len(glossary)} 条")
 
     def _run(batch_size: int) -> int:
         return ai.translate_file(
@@ -650,20 +702,24 @@ def _translate(args) -> Path:
             cfg,
             batch_size=batch_size,
             comment=comment,
+            glossary=glossary or None,
             progress=getattr(args, "tr_progress", None),
+            quiet=quiet,
         )
 
     try:
         n = _run(args.batch_size)
     except ai.CensoredError as e:
         # 单句敏感会连累整批:停止本轮,改用逐句重跑(已译部分自动续翻)
-        print(f"\n内容审查拦截:{e}\n改用 batch_size=1 逐句重跑...")
+        if not quiet:
+            print(f"\n内容审查拦截:{e}\n改用 batch_size=1 逐句重跑...")
         n = _run(1)
     except RuntimeError as e:
         if "额度不足" in str(e):
             raise SystemExit(f"\n提醒:{e}(已翻译部分已写入 {out_path},可充值后续翻)") from None
         raise
-    print(f"完成:{out_path}(新翻译 {n} 句)")
+    if not quiet:
+        print(f"完成:{out_path}(新翻译 {n} 句)")
     return out_path
 
 
@@ -686,11 +742,22 @@ def _maybe_translate_render(args, work: Path) -> Path:
     args.work = work
     if _has_pending(work):
         _translate(args)
-    args.output = getattr(args, "output", None) or work.with_suffix(".ass")
-    out = _render(args)
+    if getattr(args, "batch", False):
+        # 批量模式无人值守:照旧直接渲染
+        args.output = getattr(args, "output", None) or work.with_suffix(".ass")
+        return _render(args)
     if getattr(args, "burn", False):
+        out = _render(args)
         return _burn(args.video, out)
-    return out
+    # 单视频:不自动渲染,打开浏览器译文调整器,由用户确认后点「生成字幕」
+    from .adjust import editor
+
+    print("翻译完成,正在打开译文调整器……确认无误后点「生成字幕」输出 ASS(Ctrl+C 跳过)")
+    try:
+        editor(work)
+    except KeyboardInterrupt:
+        print("已跳过,之后可用 jpsub edit 或 jpsub render 继续")
+    return work
 
 
 def _burn(video: Path, ass_path: Path) -> Path:
@@ -804,11 +871,15 @@ def run(
         picker(args.video, args.masks)
         return None
     if args.command == "maskapply":
-        from .mask import apply_masks
+        from .mask import apply_masks, default_masks_path
 
-        masks = args.masks or args.video.with_name("masks.txt")
+        masks = args.masks or default_masks_path(args.video)
         return apply_masks(args.video, masks,
                            args.output or args.video.with_name(args.video.stem + ".masked.mp4"))
+    if args.command == "edit":
+        from .adjust import editor
+
+        return editor(args.target)
     # run = extract + (默认)translate + render
     work = args.work or _default_work(args.video)
     # --burn 且已有 ASS:跳过流水线直接烧录
