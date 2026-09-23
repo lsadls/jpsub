@@ -6,6 +6,6 @@ output/
 models/
 .trae/
 project.md
-settings.py
+/settings.py
 bin/
 yt-dlp.exe
