@@ -14,6 +14,17 @@ from . import settings
 
 WATCH_RE = re.compile(r"(?:https?://(?:www\.)?nicovideo\.jp/watch/)?(sm\d+)", re.I)
 
+_ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+
+def _safe_title(info: dict, fallback: str) -> str:
+    """取视频标题作文件名,清理非法字符,超长截断,失败回退到视频 id。"""
+    title = (info.get("title") or "").strip()
+    title = _ILLEGAL.sub("_", title).rstrip(". ")
+    if not title:
+        return fallback
+    return title[:100]
+
 
 def extract_video_id(text: str) -> str | None:
     """从 URL 或裸 id(如 sm43168834)中提取视频 id。"""
@@ -117,6 +128,7 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
     info = _extract_info(url)
     video, audio = _pick_formats(info)
     vid = info.get("id", "video")
+    name = _safe_title(info, vid)
     if audio:
         fmt = f"{video['format_id']}+{audio['format_id']}"
         print(
@@ -130,19 +142,19 @@ def download(url: str, out_dir: Path, *, comment: str | None = None) -> Path:
     _run_ytdlp([
         "-f", fmt,
         "--merge-output-format", "mp4",
-        "-o", str(out_dir / "%(id)s.%(ext)s"),
+        "-o", str(out_dir / f"{name}.%(ext)s"),
         "--no-warnings",
         url,
     ])
     # 只匹配文件(排除同名 .jpsub 工作目录),优先视频扩展名
     out_file = next(
-        (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(out_dir.glob(f"{vid}{ext}"))),
+        (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(out_dir.glob(f"{name}{ext}"))),
         None,
-    ) or next((p for p in out_dir.glob(f"{vid}.*") if p.is_file()), None)
+    ) or next((p for p in out_dir.glob(f"{name}.*") if p.is_file()), None)
     if out_file is None:
-        raise SystemExit(f"错误:下载后未找到 {out_dir}/{vid}.*")
+        raise SystemExit(f"错误:下载后未找到 {out_dir}/{name}.*")
     if comment:
-        comment_path = out_dir / f"{vid}.jpsub" / "comment.txt"
+        comment_path = out_file.parent / (out_file.stem + ".jpsub") / "comment.txt"
         comment_path.parent.mkdir(parents=True, exist_ok=True)
         comment_path.write_text(comment, encoding="utf-8")
         print(f"视频描述:{comment} -> {comment_path}")

@@ -1,7 +1,9 @@
 """ffmpeg 抽帧与帧间差异检测(布局感知)。"""
 from __future__ import annotations
 
+import os
 import subprocess
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from PIL import Image, ImageChops, ImageFilter, ImageStat
@@ -53,7 +55,7 @@ def extract_frames(
             if not 0 < crop_ratio <= 1:
                 raise ValueError(f"crop_ratio 必须在 (0,1] 内,得到 {crop_ratio}")
             vf = f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),fps={fps}"
-    cmd = [settings.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
+    cmd = [settings.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-stats", "-y"]
     if start:
         cmd += ["-ss", str(start)]
     cmd += ["-i", str(video)]
@@ -127,27 +129,52 @@ def core_mask(image: Image.Image) -> Image.Image:
     return binary.resize(_DIFF_SIZE, Image.Resampling.NEAREST)
 
 
+def _progress(i: int, total: int, label: str) -> None:
+    """单行刷新的进度显示(不换行,完成后由调用方换行)。"""
+    print(f"\r{label} {i}/{total}", end="", flush=True)
+
+
+def _mask_pair(p: Path) -> tuple[Image.Image, Image.Image]:
+    """子进程入口:一帧的主掩膜+核心掩膜(每帧只打开一次)。"""
+    with Image.open(p) as im:
+        return text_mask(im), core_mask(im)
+
+
+def _mask_one(p: Path) -> Image.Image:
+    """子进程入口:一帧的主掩膜。"""
+    with Image.open(p) as im:
+        return text_mask(im)
+
+
+def _parallel(fn, paths: list[Path], label: str):
+    """多进程并行生成掩膜,吃满逻辑核;帧少时退回单进程。"""
+    n = len(paths)
+    workers = min(os.cpu_count() or 1, n)
+    if workers <= 1:
+        return [fn(p) for p in paths]
+    chunk = max(1, n // (workers * 4))
+    out: list = [None] * n
+    done = 0
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for i, res in enumerate(ex.map(fn, paths, chunksize=chunk)):
+            out[i] = res
+            done += 1
+            _progress(done, n, label)
+    print()
+    return out
+
+
 def text_core_masks(paths: list[Path]) -> tuple[list[Image.Image], list[Image.Image]]:
-    """批量生成主掩膜与核心掩膜,每帧只打开一次。"""
-    masks: list[Image.Image] = []
-    cores: list[Image.Image] = []
-    for p in paths:
-        with Image.open(p) as im:
-            masks.append(text_mask(im))
-            cores.append(core_mask(im))
+    """批量生成主掩膜与核心掩膜(多进程并行)。"""
+    pairs = _parallel(_mask_pair, paths, "生成掩膜")
+    masks = [m for m, _ in pairs]
+    cores = [c for _, c in pairs]
     return masks, cores
 
 
 def text_masks(paths: list[Path]) -> list[Image.Image]:
-    """批量生成"文字掩膜":每帧只算一次,供相邻比较与去重复用。
-
-    `frame_diff` 每比一对就把中间帧的掩膜重算一遍;走这条路径全程只算一遍。
-    """
-    out: list[Image.Image] = []
-    for p in paths:
-        with Image.open(p) as im:
-            out.append(text_mask(im))
-    return out
+    """批量生成"文字掩膜":每帧只算一次,供相邻比较与去重复用(多进程并行)。"""
+    return _parallel(_mask_one, paths, "生成掩膜")
 
 
 def strip_static(masks: list[Image.Image], ratio: float = 0.8) -> list[Image.Image]:

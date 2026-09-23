@@ -15,6 +15,7 @@ from pathlib import Path
 from tqdm import tqdm
 
 from . import settings
+from .handoff import UNTRANSLATED_MARK, is_untranslated
 
 # SKILL.md 简化版系统提示词
 SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句翻译为简体中文。
@@ -50,6 +51,30 @@ _QUOTA_PATTERNS = (
 def _is_quota_error(err: Exception) -> bool:
     text = str(err).lower()
     return any(p.lower() in text for p in _QUOTA_PATTERNS)
+
+
+# 内容审查拦截的特征(英文/中文),命中则本批整批失败,单句问题会连累同批其他句
+_CENSOR_PATTERNS = (
+    "data_inspection_failed",
+    "inappropriate content",
+    "content_policy",
+    "content_filter",
+    "content policy",
+    "内容审核",
+    "内容不合规",
+)
+
+
+class CensoredError(RuntimeError):
+    """API 以内容审查为由拒绝了本次请求。
+
+    批量请求时无法定位是哪一句触发,故由上层停止本轮并改用 batch_size=1 重跑。
+    """
+
+
+def _is_censored_error(err: Exception) -> bool:
+    text = str(err).lower()
+    return any(p.lower() in text for p in _CENSOR_PATTERNS)
 
 
 def _chat(
@@ -94,12 +119,16 @@ def _chat(
             e = RuntimeError(f"HTTP {e.code}: {detail or e.reason}")
             if _is_quota_error(e):  # 额度/余额耗尽,重试无意义
                 raise RuntimeError(f"API 额度不足,请充值或更换模型:{e}") from None
+            if _is_censored_error(e):  # 内容审查,重试同一批无意义
+                raise CensoredError(str(e)) from None
             err = e
             if attempt < retries - 1:
                 time.sleep(2 * (attempt + 1))
         except Exception as e:  # 网络抖动/限流/响应异常,退避重试
             if _is_quota_error(e):  # 额度/余额耗尽,重试无意义
                 raise RuntimeError(f"API 额度不足,请充值或更换模型:{e}") from None
+            if _is_censored_error(e):
+                raise CensoredError(str(e)) from None
             err = e
             if attempt < retries - 1:
                 time.sleep(2 * (attempt + 1))
@@ -150,14 +179,14 @@ def read_lines(path: Path) -> list[tuple[str, str]]:
 
 
 def read_done(path: Path) -> set[str]:
-    """读取已有译文的键集合(用于续翻);译文为空的行不算。"""
+    """读取已有译文的键集合(用于续翻);译文为空或未译占位的行不算。"""
     if not path.exists():
         return set()
     done: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         if "\t" in line:
             key, _, text = line.partition("\t")
-            if text.strip():
+            if text.strip() and not is_untranslated(text):
                 done.add(key.strip())
     return done
 
@@ -169,6 +198,7 @@ def translate_file(
     *,
     batch_size: int = 10,
     comment: str | None = None,
+    progress=None,
 ) -> int:
     """分批翻译,结果按时间轴键追加写入 out_path;返回本次新翻句数。
 
@@ -182,6 +212,17 @@ def translate_file(
     items = read_lines(in_path)
     done = read_done(out_path)
     todo = [(i, t) for i, t in items if i not in done]
+    if out_path.exists() and todo:
+        # 剔除将被重翻键的旧行(如上轮留下的 [[未译]] 占位),避免 out 里同键重复
+        re_keys = {i for i, _ in todo}
+        kept = [
+            ln
+            for ln in out_path.read_text(encoding="utf-8").splitlines()
+            if not ln.strip() or ln.partition("\t")[0].strip() not in re_keys
+        ]
+        out_path.write_text(
+            "".join(ln + "\n" for ln in kept if ln.strip()), encoding="utf-8"
+        )
     system = SYSTEM_PROMPT
     if comment:
         system += (
@@ -219,6 +260,11 @@ def translate_file(
             except RuntimeError as e:
                 if "额度不足" in str(e):  # 剩余 token 耗尽:终止并提醒
                     raise
+                if isinstance(e, CensoredError) and batch_size > 1:
+                    # 单句敏感连累整批:停止本轮,由上层改用 batch_size=1 重跑
+                    raise CensoredError(
+                        f"本批({batch[0][0]}~{batch[-1][0]})触发内容审查:{e}"
+                    ) from None
                 # 其他单批失败不中断整体,回退原文并继续
                 print(f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}")
                 messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
@@ -228,13 +274,15 @@ def translate_file(
                 messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
                 got = [""] * len(batch)
             for (i, _src), zh in zip(batch, got):
-                if not zh:  # 缺行兜底:保留原句并提示
-                    print(f"警告:{i} 未返回译文,已保留原文")
-                    zh = _src
+                if not zh:  # 缺行兜底:写入未译占位标记(多为内容审查拦截),便于人工定位
+                    print(f"警告:{i} 未返回译文,已在 out 标记 {UNTRANSLATED_MARK}")
+                    zh = UNTRANSLATED_MARK
                 f.write(f"{i}\t{zh}\n")  # 写回时带上时间轴键
             f.flush()
             new_text += len(batch)
             bar.update(len(batch))
+            if progress:
+                progress(min(off + len(batch), len(todo)), len(todo))
     return new_text
 
 

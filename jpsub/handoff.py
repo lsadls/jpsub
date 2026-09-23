@@ -8,6 +8,78 @@ from pathlib import Path
 from .cache import TranslationCache
 from .segment import Segment
 
+# translate-out.txt 里"未译"占位标记:AI 未返回译文(内容审查拦截、单批失败等)时写入,
+# 让用户在 out 里一眼看出哪些句需人工处理。它不是译文,不进缓存、不参与渲染。
+UNTRANSLATED_MARK = "[[未译]]"
+
+
+def is_untranslated(text: str) -> bool:
+    """判断一行 out 内容是否为未译占位标记。"""
+    return text.strip() == UNTRANSLATED_MARK
+
+
+def fmt_secs(v: float) -> str:
+    """秒 -> 军方时间 'MMSS'(0.1s 精度,分秒各补足两位,如 58s -> '0058');
+    有小时则前面再加 HH,如 3680s -> '010120'。"""
+    v = round(v, 1)
+    h, rem = divmod(v, 3600)
+    m, s = divmod(rem, 60)
+    sstr = f"{int(s):02d}" if s == int(s) else f"{s:04.1f}"
+    if h:
+        return f"{int(h):02d}{int(m):02d}{sstr}"
+    return f"{int(m):02d}{sstr}"
+
+
+def make_key(start: float, end: float) -> str:
+    """段落时间轴键:'1120-1145'(军方时间,便于人工编辑)。"""
+    return f"{fmt_secs(start)}-{fmt_secs(end)}"
+
+
+def _parse_secs(t: str) -> float | None:
+    """解析单个时间:'1120'(MMSS)、'010120'(HHMMSS)、'58'(纯秒,兼容)、
+    兼容带冒号的 '11:20' / '1:01:20'。"""
+    t = t.strip()
+    if ":" in t:
+        parts = t.split(":")
+        if len(parts) > 3:
+            return None
+        try:
+            nums = [float(p) for p in parts]
+        except ValueError:
+            return None
+        while len(nums) < 3:
+            nums.insert(0, 0.0)
+        return nums[0] * 3600 + nums[1] * 60 + nums[2]
+    ip, _, frac = t.partition(".")
+    if not ip.isdigit() or (frac and not frac.isdigit()):
+        return None
+    if len(ip) <= 2:  # 纯秒数
+        return float(t)
+    if len(ip) > 6:
+        return None
+    s = ip[-2:] + (f".{frac}" if frac else "")
+    rest = ip[:-2]
+    if len(rest) <= 2:
+        h, m = 0, int(rest)
+    else:
+        h, m = int(rest[:-2]), int(rest[-2:])
+    return h * 3600 + m * 60 + float(s)
+
+
+def parse_key(key: str) -> tuple[float, float] | None:
+    """解析时间轴键为 (起秒, 止秒),兼容军方时间与带冒号写法。"""
+    a, sep, b = key.partition("-")
+    if not sep:
+        return None
+    x, y = _parse_secs(a), _parse_secs(b)
+    return (x, y) if x is not None and y is not None else None
+
+
+def norm_key(key: str) -> str:
+    """任意格式的键统一为军方时间形式(旧秒数键自动迁移);无法解析则原样返回。"""
+    r = parse_key(key)
+    return make_key(*r) if r else key
+
 
 def write_segments(
     segments: list[Segment],
@@ -69,13 +141,13 @@ def export_pending(
 ) -> list[tuple[str, str]]:
     """把全部唯一原文写成纯文本(全量导出,命中缓存的也包含)。
 
-    每行 `起-止<TAB>原文`,时间轴取该句首次出现段的起止秒(如 `12.5-14`),
+    每行 `起-止<TAB>原文`,时间轴取该句首次出现段的起止秒(如 `00:00:12.5-00:00:14`),
     用户可随意编辑/换行/增删行。返回 [(时间轴键, 原文), ...]。
     """
     seen: dict[str, str] = {}
     for s in segments:
         if s.text and s.text not in seen:
-            seen[s.text] = f"{s.start:g}-{s.end:g}"
+            seen[s.text] = make_key(s.start, s.end)
     items = [(k, t) for t, k in seen.items()]  # [(时间轴键, 原文)]
     items.sort(key=lambda kt: _key_start(kt[0]))  # 按时间轴排序,便于人工阅读
     out_txt.parent.mkdir(parents=True, exist_ok=True)
@@ -88,11 +160,9 @@ def export_pending(
 
 
 def _key_start(key: str) -> float:
-    """时间轴键 '573.5-584' 的起始秒,用于排序。"""
-    try:
-        return float(key.partition("-")[0])
-    except ValueError:
-        return float("inf")
+    """时间轴键的起始秒(兼容军方时间与旧纯秒数),用于排序。"""
+    r = parse_key(key)
+    return r[0] if r else float("inf")
 
 
 def realign_translations(
@@ -120,7 +190,7 @@ def realign_translations(
     if old_out_text:
         for ln in old_out_text.splitlines():
             if ln.strip():
-                old_out_keys.add(ln.partition("\t")[0].strip())
+                old_out_keys.add(norm_key(ln.partition("\t")[0].strip()))
     lines: list[str] = []
     for key, text in src_map.items():
         if old_out_text and key not in old_out_keys:
@@ -128,8 +198,11 @@ def realign_translations(
         tr = None
         if old_in_text and old_src.get(key) == text and old_out_text:
             for ln in old_out_text.splitlines():  # 同键同原文:用户优先
-                if ln.startswith(key + "\t") and ln.partition("\t")[2].strip():
-                    tr = ln.partition("\t")[2].strip()
+                if "\t" not in ln or norm_key(ln.partition("\t")[0].strip()) != key:
+                    continue
+                cand = ln.partition("\t")[2].strip()
+                if cand and not is_untranslated(cand):
+                    tr = cand
                     break
         if not tr:
             tr = cache.get(text)
@@ -157,6 +230,7 @@ def sync_segments(
     返回按起始时间排序的新段落列表。
     """
     out_keys: set[str] = set()
+    mark_keys: set[str] = set()  # out 里标为未译的键:清掉段上的旧译文快照
     tr_by_key: dict[str, str] = {}
     for ln in out_text.splitlines():
         if not ln.strip():
@@ -165,37 +239,41 @@ def sync_segments(
         if not sp:
             continue
         k, t = sp
+        k = norm_key(k)
         out_keys.add(k)
-        if t.strip():
+        if is_untranslated(t):
+            mark_keys.add(k)
+        elif t.strip():
             tr_by_key[k] = t.strip()
     deleted_keys = (set(in_map) - out_keys) & (allow_delete or set())
-    segs = [s for s in segs if f"{s.start:g}-{s.end:g}" not in deleted_keys]
+    segs = [s for s in segs if make_key(s.start, s.end) not in deleted_keys]
     if allow_delete:
         # out 是最终裁决:凡 out 里没有的时间轴,一律视为用户删除
-        segs = [s for s in segs if f"{s.start:g}-{s.end:g}" in out_keys]
+        segs = [s for s in segs if make_key(s.start, s.end) in out_keys]
+    for s in segs:  # 标为未译的段:清掉旧译文,渲染时走缓存兜底/不显示
+        if make_key(s.start, s.end) in mark_keys:
+            s.tr = None
     for k, t in tr_by_key.items():
-        if k in in_map or "-" not in k:
+        if k in in_map:
             continue
-        try:
-            st, en = (float(x) for x in k.split("-", 1))
-        except ValueError:
+        r = parse_key(k)
+        if not r:
             continue
-        segs.append(Segment(st, en, t, tr=t))  # 新增段:文本即译文
+        segs.append(Segment(r[0], r[1], t, tr=t))  # 新增段:文本即译文
     # 同一时间轴只保留一条(优先带译文的),避免历史重复段重复渲染
     dedup: dict[str, Segment] = {}
     for s in segs:
-        k = f"{s.start:g}-{s.end:g}"
+        k = make_key(s.start, s.end)
         if k not in dedup or (not dedup[k].tr and s.tr):
             dedup[k] = s
     segs = sorted(dedup.values(), key=lambda s: s.start)
     return segs
 
 
-_KEY_RE = re.compile(r"^(\d+(?:\.\d+)?-\d+(?:\.\d+)?)[ \t]+(.*)$")
-
+_KEY_RE = re.compile(r"^([\d:.\-]+)[ \t]+(.*)$")
 
 def split_line(ln: str) -> tuple[str, str] | None:
-    """解析「键<TAB>文本」行;键后用空格分隔(如 '745-747 住手')也能识别。"""
+    """解析「键<TAB>文本」行;键后用空格分隔(如 '00:12:25 住手')也能识别。"""
     if "\t" in ln:
         k, _, t = ln.partition("\t")
         return k.strip(), t
@@ -211,7 +289,7 @@ def pending_map_from_str(text: str) -> dict[str, str]:
             continue
         sp = split_line(ln)
         if sp:
-            out[sp[0]] = sp[1]
+            out[norm_key(sp[0])] = sp[1]
         else:
             out[str(pos)] = ln
     return out
@@ -245,7 +323,7 @@ def import_translations(
     for pos, line in enumerate(lines):
         sp = split_line(line)
         if sp:
-            idx, dst = sp
+            idx, dst = norm_key(sp[0]), sp[1]
             if idx not in src_map:
                 continue
         else:
@@ -253,6 +331,8 @@ def import_translations(
                 continue
             idx, dst = order[pos], line
         dst = dst.strip()
+        if is_untranslated(dst):  # 未译占位:不算译好也不算删除,留待重翻
+            continue
         if not dst:
             deleted_keys.add(idx)  # 置空译文 = 删除该条字幕
         elif "\t" in dst or "\n" in dst:
@@ -270,6 +350,10 @@ def resolve(segments: list[Segment], cache: TranslationCache) -> dict[str, str]:
     其次翻译缓存;缺译文的不返回(渲染时该段不显示,不用原文填补)。"""
     out: dict[str, str] = {}
     for s in segments:
-        if s.text and (s.tr or cache.get(s.text)):
-            out[s.text] = s.tr or cache.get(s.text)
+        if not s.text:
+            continue
+        for cand in (s.tr, cache.get(s.text)):
+            if cand and not is_untranslated(cand):
+                out[s.text] = cand
+                break
     return out

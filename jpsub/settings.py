@@ -41,7 +41,6 @@ NICO_AUDIO_QUALITY = "lowest"
 
 OCR_DET_MODEL = "PP-OCRv5_mobile_det"
 OCR_REC_MODEL = "PP-OCRv5_mobile_rec"
-OCR_NOTEXT_FILTER = True
 
 FPS = 2.0
 CROP = "0.78:0.02:0.01:0.01"

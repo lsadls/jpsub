@@ -26,52 +26,6 @@ def _prepare_env() -> int:
     return threads
 
 
-class NoTextFilter:
-    """无字帧判据(检测框有无),供跳过无字画面的识别。
-
-    单级 mobile 检测,检出任一文本框即判有字。保守:只要检出 1 个框
-    就认为有字,宁可漏删不误杀。
-    """
-
-    def __init__(self, threads: int | None = None) -> None:
-        self._threads = threads or _prepare_env()
-        self._fast = None
-
-    def _model(self, name: str):
-        from paddleocr import TextDetection
-
-        return TextDetection(
-            model_name=name, cpu_threads=self._threads, enable_mkldnn=False
-        )
-
-    def _detect(self, model, image_path: Path) -> bool:
-        for res in model.predict(str(image_path)):
-            polys = res["dt_polys"]
-            if polys is not None and len(polys) > 0:
-                return True
-        return False
-
-    def has_text_image(self, image) -> bool:
-        """对掩膜化图片(白字黑底)判定有无文字。
-
-        输入为已剔除静态水印的文字掩膜,低亮度水印/背景纹理不再触发检测框。
-        """
-        import numpy as np
-
-        if self._fast is None:
-            self._fast = self._model(settings.OCR_DET_MODEL)
-        arr = np.asarray(image.convert("RGB"))
-        for res in self._fast.predict(arr):
-            polys = res["dt_polys"]
-            if polys is not None and len(polys) > 0:
-                return True
-        return False
-
-    def filter(self, image_paths: list[Path]) -> list[Path]:
-        """返回其中含文字的帧(保持原顺序)。"""
-        return [p for p in image_paths if self.has_text(p)]
-
-
 class PaddleOcrEngine:
     """PaddleOCR 薄封装。模型在首次构造时下载并缓存。"""
 
@@ -91,13 +45,6 @@ class PaddleOcrEngine:
             use_doc_unwarping=False,
             use_textline_orientation=False,
         )
-        self._filter: NoTextFilter | None = None
-
-    def has_text(self, image_path: Path) -> bool:
-        """快速判据:画面里有无文字,无字的帧可跳过识别。"""
-        if self._filter is None:
-            self._filter = NoTextFilter()
-        return self._filter.has_text(image_path)
 
     def _predict(self, image_path: Path) -> list[tuple[int, str]]:
         """对一张图做检测+识别,返回 [(行顶部 y, 文本), ...] 按 y 排序。"""
