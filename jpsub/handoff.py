@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from .cache import TranslationCache
@@ -160,13 +161,18 @@ def sync_segments(
     for ln in out_text.splitlines():
         if not ln.strip():
             continue
-        k, _, t = ln.partition("\t")
-        k = k.strip()
+        sp = split_line(ln)
+        if not sp:
+            continue
+        k, t = sp
         out_keys.add(k)
         if t.strip():
             tr_by_key[k] = t.strip()
     deleted_keys = (set(in_map) - out_keys) & (allow_delete or set())
     segs = [s for s in segs if f"{s.start:g}-{s.end:g}" not in deleted_keys]
+    if allow_delete:
+        # out 是最终裁决:凡 out 里没有的时间轴,一律视为用户删除
+        segs = [s for s in segs if f"{s.start:g}-{s.end:g}" in out_keys]
     for k, t in tr_by_key.items():
         if k in in_map or "-" not in k:
             continue
@@ -175,8 +181,26 @@ def sync_segments(
         except ValueError:
             continue
         segs.append(Segment(st, en, t, tr=t))  # 新增段:文本即译文
-    segs.sort(key=lambda s: s.start)
+    # 同一时间轴只保留一条(优先带译文的),避免历史重复段重复渲染
+    dedup: dict[str, Segment] = {}
+    for s in segs:
+        k = f"{s.start:g}-{s.end:g}"
+        if k not in dedup or (not dedup[k].tr and s.tr):
+            dedup[k] = s
+    segs = sorted(dedup.values(), key=lambda s: s.start)
     return segs
+
+
+_KEY_RE = re.compile(r"^(\d+(?:\.\d+)?-\d+(?:\.\d+)?)[ \t]+(.*)$")
+
+
+def split_line(ln: str) -> tuple[str, str] | None:
+    """解析「键<TAB>文本」行;键后用空格分隔(如 '745-747 住手')也能识别。"""
+    if "\t" in ln:
+        k, _, t = ln.partition("\t")
+        return k.strip(), t
+    m = _KEY_RE.match(ln)
+    return (m.group(1), m.group(2)) if m else None
 
 
 def pending_map_from_str(text: str) -> dict[str, str]:
@@ -185,9 +209,9 @@ def pending_map_from_str(text: str) -> dict[str, str]:
     for pos, ln in enumerate(text.splitlines(), 1):
         if not ln.strip():
             continue
-        if "\t" in ln:
-            key, _, t = ln.partition("\t")
-            out[key.strip()] = t
+        sp = split_line(ln)
+        if sp:
+            out[sp[0]] = sp[1]
         else:
             out[str(pos)] = ln
     return out
@@ -215,13 +239,13 @@ def import_translations(
     由调用方把对应字幕段从时间轴上移除;键不在 out 里 = 未翻译,保留原文。
     """
     lines = [ln for ln in txt_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    has_index = bool(lines) and all("\t" in ln for ln in lines)
     order = list(src_map)
     count = 0
     deleted_keys: set[str] = set()
     for pos, line in enumerate(lines):
-        if has_index:
-            idx, _, dst = line.partition("\t")
+        sp = split_line(line)
+        if sp:
+            idx, dst = sp
             if idx not in src_map:
                 continue
         else:

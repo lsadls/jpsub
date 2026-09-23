@@ -472,9 +472,13 @@ def _render(args) -> Path:
         for s in segs:
             if tr_by_text.get(s.text):
                 s.tr = tr_by_text[s.text]
-        # 同步段落:out 新增的轴=加段(render 不删段,缺行只是未翻译不显示)
+        # 同步段落:out 是最终裁决——out 缺少的轴=用户删除(不限 in 里的键);
+        # out 新增的轴=加段
         segs = handoff.sync_segments(
-            segs, src_map, out_file.read_text(encoding="utf-8"), allow_delete=set()
+            segs,
+            src_map,
+            out_file.read_text(encoding="utf-8"),
+            allow_delete={f"{s.start:g}-{s.end:g}" for s in segs},
         )
         handoff.write_segments(segs, work / "segments.json")
     out = args.output or work.with_suffix(".ass")
