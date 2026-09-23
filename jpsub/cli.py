@@ -177,6 +177,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="保存目录(默认 <项目根>/output)",
     )
+    d.add_argument(
+        "--cookies-from-browser",
+        default=settings.COOKIES_FROM_BROWSER,
+        help="把浏览器 cookies 传给 yt-dlp(如 chrome/firefox/edge),应对登录或地区限制",
+    )
     d.add_argument("--burn", action="store_true", help="把 ASS 烧录进视频(默认不烧录)")
     d.add_argument(
         "--comment",
@@ -482,8 +487,11 @@ def _burn(video: Path, ass_path: Path) -> Path:
 
 
 def _download(args) -> Path:
+    from . import download as dl
     from .download import download
 
+    if args.cookies_from_browser:  # 命令行优先于 settings.py
+        dl.settings.COOKIES_FROM_BROWSER = args.cookies_from_browser
     args.output = args.output or _output_root()
     video = download(args.url, args.output, comment=args.comment)
     args.video = video

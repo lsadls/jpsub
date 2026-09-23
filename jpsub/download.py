@@ -25,16 +25,26 @@ def _proxy_args() -> list[str]:
     return ["--proxy", settings.PROXY] if settings.PROXY else []
 
 
+def _cookies_args() -> list[str]:
+    return (
+        ["--cookies-from-browser", settings.COOKIES_FROM_BROWSER]
+        if settings.COOKIES_FROM_BROWSER
+        else []
+    )
+
+
 def _run_ytdlp(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     """调用外部 yt-dlp(Windows 用项目根目录 yt-dlp.exe,Linux 用系统 yt-dlp)。"""
-    cmd = [settings.binary("yt-dlp"), *_proxy_args(), *args]
+    cmd = [settings.binary("yt-dlp"), *_cookies_args(), *_proxy_args(), *args]
     return subprocess.run(cmd, check=check)
 
 
 def _extract_info(url: str) -> dict:
     """用 yt-dlp -J 获取视频信息(不下载)。"""
-    cmd = [settings.binary("yt-dlp"), "-J", "--no-warnings", *_proxy_args(), url]
-    r = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    cmd = [settings.binary("yt-dlp"), "-J", "--no-warnings", *_cookies_args(), *_proxy_args(), url]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit(f"yt-dlp 获取视频信息失败:\n{r.stderr.strip()}")
     return json.loads(r.stdout)
 
 

@@ -34,6 +34,7 @@ API_BASE = ""
 API_KEY = ""
 MODEL = ""
 PROXY = ""
+COOKIES_FROM_BROWSER = ""  # 传给 yt-dlp 的 --cookies-from-browser,如 "firefox"
 
 NICO_VIDEO_QUALITY = "360p"
 NICO_AUDIO_QUALITY = "lowest"

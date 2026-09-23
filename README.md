@@ -110,6 +110,31 @@ AI拓也使用 `--crop 1` 获取全部文字,并使用 `--batch-size 3` 降低ai
 .venv\Scripts\jpsub.exe run sm43168834 --end 11:45
 ```
 
+### 9. 使用浏览器 cookies 下载（应对登录/地区限制）
+
+下载时把浏览器的登录状态传给 yt-dlp，用 `--cookies-from-browser` 参数指定浏览器名：
+
+```
+.venv\Scripts\jpsub.exe sm43168834 --cookies-from-browser chrome
+.venv\Scripts\jpsub.exe sm43168834 --cookies-from-browser edge
+.venv\Scripts\jpsub.exe sm43168834 --cookies-from-browser firefox
+```
+
+也可以在 `settings.py` 里写 `COOKIES_FROM_BROWSER = "chrome"` 永久生效（命令行参数优先）。
+
+> 注意：使用前请确保对应浏览器已**完全退出**（Firefox 可不用退出），否则 cookie 数据库可能被占用。
+
+**yt-dlp 找不到浏览器配置（报 `could not find ... cookies database`）时**，完整语法为
+`--cookies-from-browser 浏览器名[+KEYRING][:PROFILE][::CONTAINER]`：
+
+- 支持的浏览器：`brave, chrome, chromium, edge, firefox, opera, safari, vivaldi, whale`
+- `+KEYRING`：Linux 下 Chromium 系浏览器解密 cookie 用的密钥环，可选 `basictext, gnomekeyring, kwallet, kwallet5, kwallet6`
+- `:PROFILE`：指定 profile 的**名称或路径**。找不到数据库通常是因为浏览器装在非默认位置，直接把 profile 文件夹的完整路径写在这里即可，例如：
+  ```
+  .venv\Scripts\jpsub.exe sm43168834 --cookies-from-browser "chrome:C:\Users\你的用户名\AppData\Local\Google\Chrome\User Data\Default"
+  ```
+- `::CONTAINER`：仅 Firefox，指定容器名（`none` 表示不使用容器），默认使用最近访问 profile 的所有容器。
+
 ## 四、常见问题
 
 - **首次运行很慢 / 卡在下载模型**：首次使用会自动下载 OCR 模型，请确认代理已开启全局模式，耐心等待。

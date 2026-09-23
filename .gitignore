@@ -9,3 +9,6 @@ project.md
 /settings.py
 bin/
 yt-dlp.exe
+.hf-cache/
+archive/
+.vscode/
