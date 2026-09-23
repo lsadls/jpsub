@@ -405,6 +405,15 @@ def _extract(args, engine=None) -> Path:
     for s in segs:
         if tr_by_text.get(s.text):
             s.tr = tr_by_text[s.text]
+    # 以 out 时间轴为准同步段落:旧 out 有而新 out 没有的轴=用户删除,加轴=加段
+    old_out_keys = (
+        {ln.partition("\t")[0].strip() for ln in old_out.splitlines() if ln.strip()}
+        if old_out
+        else set()
+    )
+    segs = handoff.sync_segments(
+        segs, dict(items), out_body, allow_delete=old_out_keys
+    )
     comment_path = work / "comment.txt"  # download --comment 写入的视频描述
     handoff.write_segments(
         segs,
@@ -463,6 +472,10 @@ def _render(args) -> Path:
         for s in segs:
             if tr_by_text.get(s.text):
                 s.tr = tr_by_text[s.text]
+        # 同步段落:out 新增的轴=加段(render 不删段,缺行只是未翻译不显示)
+        segs = handoff.sync_segments(
+            segs, src_map, out_file.read_text(encoding="utf-8"), allow_delete=set()
+        )
         handoff.write_segments(segs, work / "segments.json")
     out = args.output or work.with_suffix(".ass")
     ass.write_ass(

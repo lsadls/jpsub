@@ -64,7 +64,7 @@ def write_ass(
     font_size: int = 54,
     max_chars: int = 24,
 ) -> None:
-    """把字幕段与译文写成 ASS;缺译文的段保留日文原文。位置交给播放器默认处理。
+    """把字幕段与译文写成 ASS;缺译文的段不显示(不用日文原文填补)。位置交给播放器默认处理。
 
     超过 MAX_LINES 行的段会按字数比例切分成多条,每条最多 MAX_LINES 行。
     """
@@ -80,7 +80,9 @@ def write_ass(
     subs.styles["Default"] = style
 
     for seg in segments:
-        text = translations.get(seg.text) or seg.text
+        text = translations.get(seg.text)
+        if not text:
+            continue
         for start, end, chunk in _split_events(
             text, seg.start, seg.end, max_chars=max_chars
         ):

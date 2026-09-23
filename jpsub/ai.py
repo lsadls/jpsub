@@ -20,7 +20,7 @@ from . import settings
 SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句翻译为简体中文。
 
 背景:视频是日本例区文化(如淫梦文化)的二次创作(如 BB 剧场),注意例区用语、
-网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。
+网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。人名和专有名词周围加空格
 
 规则:
 - 忠实原意,语气自然简洁,不添油加醋、不省略信息;
@@ -184,7 +184,9 @@ def translate_file(
     todo = [(i, t) for i, t in items if i not in done]
     system = SYSTEM_PROMPT
     if comment:
-        system += f"\n\n视频背景描述:{comment}\n翻译时请结合该描述选择合适的语气与用词。"
+        system += (
+            f"\n\n视频背景描述:{comment}\n翻译时请结合该描述选择合适的语气与用词。"
+        )
     messages: list[dict] = [{"role": "system", "content": system}]
     new_text = 0
     with (

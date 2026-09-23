@@ -76,6 +76,7 @@ def export_pending(
         if s.text and s.text not in seen:
             seen[s.text] = f"{s.start:g}-{s.end:g}"
     items = [(k, t) for t, k in seen.items()]  # [(时间轴键, 原文)]
+    items.sort(key=lambda kt: _key_start(kt[0]))  # 按时间轴排序,便于人工阅读
     out_txt.parent.mkdir(parents=True, exist_ok=True)
     if with_index:
         body = "".join(f"{k}\t{t}\n" for k, t in items)
@@ -83,6 +84,14 @@ def export_pending(
         body = "".join(f"{t}\n" for _, t in items)
     out_txt.write_text(body, encoding="utf-8")
     return items
+
+
+def _key_start(key: str) -> float:
+    """时间轴键 '573.5-584' 的起始秒,用于排序。"""
+    try:
+        return float(key.partition("-")[0])
+    except ValueError:
+        return float("inf")
 
 
 def realign_translations(
@@ -104,8 +113,17 @@ def realign_translations(
     src_map = pending_map_from_in(in_txt)
     old_src = pending_map_from_str(old_in_text) if old_in_text else {}
     old_tr_by_text = {s.text: s.tr for s in old_segs if s.text and s.tr}
+    # 旧 out 里出现过的键(含译文置空行):新 out 只保留这些键,
+    # 用户从 out 删掉的时间轴不再从缓存/快照回填,视为删除该字幕
+    old_out_keys: set[str] = set()
+    if old_out_text:
+        for ln in old_out_text.splitlines():
+            if ln.strip():
+                old_out_keys.add(ln.partition("\t")[0].strip())
     lines: list[str] = []
     for key, text in src_map.items():
+        if old_out_text and key not in old_out_keys:
+            continue
         tr = None
         if old_in_text and old_src.get(key) == text and old_out_text:
             for ln in old_out_text.splitlines():  # 同键同原文:用户优先
@@ -118,7 +136,47 @@ def realign_translations(
             tr = old_tr_by_text.get(text)
         if tr:
             lines.append(f"{key}\t{tr}")
+    lines.sort(key=lambda ln: _key_start(ln.partition("\t")[0]))  # 按时间轴排序
     return "".join(f"{ln}\n" for ln in lines)
+
+
+def sync_segments(
+    segs: list[Segment],
+    in_map: dict[str, str],
+    out_text: str,
+    *,
+    allow_delete: set[str] | None = None,
+) -> list[Segment]:
+    """以 out 的时间轴为准同步 segments:
+
+    - `allow_delete` 里的键若不在 out 中 = 用户删除了该字幕,从 segments 移除;
+      (传 None/空集则不删段——out 缺行可能只是未翻译,不能误删)
+    - out 里有而 in 里没有的时间轴 = 用户新增的字幕,解析行首 `起-止`
+      新增段落(译文即该行内容,原样显示)。
+    返回按起始时间排序的新段落列表。
+    """
+    out_keys: set[str] = set()
+    tr_by_key: dict[str, str] = {}
+    for ln in out_text.splitlines():
+        if not ln.strip():
+            continue
+        k, _, t = ln.partition("\t")
+        k = k.strip()
+        out_keys.add(k)
+        if t.strip():
+            tr_by_key[k] = t.strip()
+    deleted_keys = (set(in_map) - out_keys) & (allow_delete or set())
+    segs = [s for s in segs if f"{s.start:g}-{s.end:g}" not in deleted_keys]
+    for k, t in tr_by_key.items():
+        if k in in_map or "-" not in k:
+            continue
+        try:
+            st, en = (float(x) for x in k.split("-", 1))
+        except ValueError:
+            continue
+        segs.append(Segment(st, en, t, tr=t))  # 新增段:文本即译文
+    segs.sort(key=lambda s: s.start)
+    return segs
 
 
 def pending_map_from_str(text: str) -> dict[str, str]:
@@ -171,11 +229,13 @@ def import_translations(
                 continue
             idx, dst = order[pos], line
         dst = dst.strip()
-        if dst:
+        if not dst:
+            deleted_keys.add(idx)  # 置空译文 = 删除该条字幕
+        elif "\t" in dst or "\n" in dst:
+            continue  # 译文里混入时间轴/多行 = 损坏行,不进缓存
+        else:
             cache.put(src_map[idx], dst)
             count += 1
-        else:
-            deleted_keys.add(idx)  # 置空译文 = 删除该条字幕
     cache.save()
     deleted = [t for key, t in src_map.items() if key in deleted_keys]
     return count, deleted
@@ -183,9 +243,9 @@ def import_translations(
 
 def resolve(segments: list[Segment], cache: TranslationCache) -> dict[str, str]:
     """段文本 -> 译文。优先段上快照的 tr(用户编辑过 in/out 后最新),
-    其次翻译缓存,缺译文回退原文(不中断管道)。"""
+    其次翻译缓存;缺译文的不返回(渲染时该段不显示,不用原文填补)。"""
     out: dict[str, str] = {}
     for s in segments:
-        if s.text:
-            out[s.text] = s.tr or cache.get(s.text) or s.text
+        if s.text and (s.tr or cache.get(s.text)):
+            out[s.text] = s.tr or cache.get(s.text)
     return out
