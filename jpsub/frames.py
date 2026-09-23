@@ -57,8 +57,16 @@ def _binary_mask(image: Image.Image) -> Image.Image:
     # 阈值 25:文字笔画局部对比远高于半透明框透出的条纹纹理(实测两者差一个
     # 数量级),单独该条件即可分离文字与背景,暗文字(混光后 vivid≈160)也不漏
     binary = local.point(lambda p: 255 if p >= 25 else 0)
+    # 亮度门槛(vivid>=170):白色文字远高于此,而半透明字幕框的条纹动画、
+    # 边框装饰、背景中低亮度纹理都被剔除——否则剧烈动画场景(如条纹闪烁的
+    # 对话框)里静止文字的掩膜会被噪声淹没,静态判定完全失效导致吞段
+    bright = vivid.point(lambda p: 255 if p >= 170 else 0)
+    binary = ImageChops.multiply(binary, bright)
     # 中值滤波去掉孤立噪点,笔画(2px 以上)保留
     binary = binary.filter(ImageFilter.MedianFilter(3))
+    # 膨胀一格:桥接文字上掠过的扫描线暗纹、把滚动的虚线边框连成实线
+    #(实线恒在→被 strip_static 剔除),静止区的差异信号随之归零
+    binary = binary.filter(ImageFilter.MaxFilter(3))
     if ImageStat.Stat(binary).mean[0] < 0.5:
         # 兜底:高通会把大面积实心块(纯色画面/整屏字幕卡)内部清零;若局部
         # 掩膜几乎为空,回退到全局阈值(max 通道均值 + 余量,夹在 [80,240]),

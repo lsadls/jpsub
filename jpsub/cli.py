@@ -352,23 +352,17 @@ def _extract(args, engine=None) -> Path:
         print(f"仅抽帧完成 -> {keep}")
         return work
 
-    handoff.write_segments(segs, work / "segments.json")
     cache = TranslationCache(args.cache or work / "cache.json")
     pending = handoff.export_pending(
         segs, cache, work / "translate-in.txt", with_index=not args.no_index
     )
     comment_path = work / "comment.txt"  # download --comment 写入的视频描述
-    (work / "pending.json").write_text(
-        json.dumps(
-            {
-                "pending": pending,
-                "comment": comment_path.read_text(encoding="utf-8").strip()
-                if comment_path.exists()
-                else None,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    handoff.write_segments(
+        segs,
+        work / "segments.json",
+        comment=comment_path.read_text(encoding="utf-8").strip()
+        if comment_path.exists()
+        else None,
     )
     print(f"工作目录:{work}")
     print(f"待翻译 {len(pending)} 句 -> {work / 'translate-in.txt'}")
@@ -377,14 +371,27 @@ def _extract(args, engine=None) -> Path:
     return work
 
 
+def _load_meta(work: Path) -> dict:
+    """读翻译元信息(comment):优先 segments.json,旧目录回退 pending.json。"""
+    meta = handoff.read_meta(work / "segments.json")
+    if meta.get("comment") is None:
+        legacy = work / "pending.json"
+        if legacy.exists():
+            return json.loads(legacy.read_text(encoding="utf-8"))
+    return meta
+
+
 def _render(args) -> Path:
     work = args.work
     segs = handoff.read_segments(work / "segments.json")
-    pend_path = work / "pending.json"
-    pending: list[str] = []
-    if pend_path.exists():
-        meta = json.loads(pend_path.read_text(encoding="utf-8"))
-        pending = meta.get("pending", [])
+    # pending 快照从 translate-in.txt 反推(它就是导出时的原文顺序);
+    # 实在没有(旧目录且被清理)才回退 pending.json
+    in_path = work / "translate-in.txt"
+    pending = (
+        handoff.pending_from_in(in_path)
+        if in_path.exists()
+        else _load_meta(work).get("pending", [])
+    )
     cache = TranslationCache(args.cache or work / "cache.json")
 
     out_file = work / "translate-out.txt"
@@ -415,9 +422,8 @@ def _translate(args) -> Path:
     cfg = ai.resolve_config(args)
     out_path = args.work / "translate-out.txt"
     comment = getattr(args, "comment", None)  # 命令行指定优先
-    pend_path = args.work / "pending.json"
-    if comment is None and pend_path.exists():
-        comment = json.loads(pend_path.read_text(encoding="utf-8")).get("comment")
+    if comment is None:
+        comment = _load_meta(args.work).get("comment")
     n = ai.translate_file(
         in_path, out_path, cfg, batch_size=args.batch_size, comment=comment
     )

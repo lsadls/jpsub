@@ -8,15 +8,38 @@ from .cache import TranslationCache
 from .segment import Segment
 
 
-def write_segments(segments: list[Segment], path: Path) -> None:
+def write_segments(
+    segments: list[Segment],
+    path: Path,
+    *,
+    comment: str | None = None,
+) -> None:
+    """segments 与翻译元信息(comment)合写进同一个 JSON。
+
+    结构:{"segments": [...], "comment": ...},comment 是视频描述。
+    pending 快照不落盘——translate-in.txt 本身就是导出顺序的快照,渲染时反推。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
+    data = {
+        "segments": [{"start": s.start, "end": s.end, "text": s.text} for s in segments],
+        "comment": comment,
+    }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def read_segments(path: Path) -> list[Segment]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    return [Segment(d["start"], d["end"], d["text"]) for d in data]
+    # 旧格式:顶层就是段落列表;新格式:包在 "segments" 键下
+    items = data if isinstance(data, list) else data.get("segments", [])
+    return [Segment(d["start"], d["end"], d["text"]) for d in items]
+
+
+def read_meta(path: Path) -> dict:
+    """读 segments.json 里的翻译元信息(comment)。旧格式返回空。"""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return {}
+    return {"comment": data.get("comment")}
 
 
 def pending_texts(segments: list[Segment], cache: TranslationCache) -> list[str]:
@@ -48,6 +71,19 @@ def export_pending(
         body = "".join(f"{t}\n" for t in pending)
     out_txt.write_text(body, encoding="utf-8")
     return pending
+
+
+def pending_from_in(in_txt: Path) -> list[str]:
+    """从 translate-in.txt 反推 pending 快照(即当次导出的原文顺序)。
+
+    '编号<TAB>原文' 行取编号对应原文;无 TAB 的行按行序取原文。空行跳过。
+    """
+    out: list[str] = []
+    for ln in in_txt.read_text(encoding="utf-8").splitlines():
+        if not ln.strip():
+            continue
+        out.append(ln.split("\t", 1)[1] if "\t" in ln else ln)
+    return out
 
 
 def import_translations(
