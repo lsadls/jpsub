@@ -328,6 +328,7 @@ $('apply').onclick=async()=>{await save();applying=true;msg.textContent='应用�
   await fetch('/apply',{method:'POST'});
   applying=false;msg.textContent=(await(await fetch('/apply-status')).json()).msg;};
 setInterval(async()=>{if(!applying)return;msg.textContent=(await(await fetch('/apply-status')).json()).msg},2000);
+addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 function setT(v){t=Math.min(DUR,Math.max(0,v));$('t').value=fmt(t);$('slider').value=t;loadFrame()}
 $('t').onchange=()=>{const v=parseT($('t').value);if(!isNaN(v))setT(v)};
 $('slider').oninput=()=>{t=+$('slider').value;$('t').value=fmt(t);loadFrame()};
@@ -358,6 +359,17 @@ class _Picker:
         self.apply_msg = "空闲"
         self._img_seq = 0
 
+        import time
+        self._last = time.time()  # 最近一次页面请求时间(判断页面是否已关闭)
+
+        def _maybe_quit():
+            """页面关闭后 2s 内没有新请求才退出(排除刷新误触)。"""
+            if time.time() - picker._last > 1.5:
+                self.srv.shutdown()
+
+        def _touch():
+            picker._last = time.time()
+
         picker = self
 
         class H(BaseHTTPRequestHandler):
@@ -375,6 +387,7 @@ class _Picker:
                 self.wfile.write(body)
 
             def do_GET(self):
+                _touch()
                 if self.path == "/":
                     body = _render_page(picker).encode()
                     self.send_response(200)
@@ -424,9 +437,13 @@ class _Picker:
             def do_POST(self):
                 import json
 
+                _touch()
                 n = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(n)
-                if self.path == "/save":
+                if self.path == "/quit":
+                    self._json({"ok": True})
+                    threading.Timer(2.0, _maybe_quit).start()
+                elif self.path == "/save":
                     items = json.loads(body)
                     entries = [
                         MaskEntry(float(m["start"]), float(m["end"]), int(m["x"]),
@@ -553,7 +570,7 @@ def picker(video: Path, masks_path: Path | None = None) -> None:
         old.unlink(missing_ok=True)
     p = _Picker(video, masks_path)
     url = f"http://127.0.0.1:{p.srv.server_address[1]}/"
-    print(f"打码选取器:{url}(浏览器未自动打开时手动访问;Ctrl+C 退出;应用打码完成后自动退出)")
+    print(f"打码选取器:{url}(浏览器未自动打开时手动访问;关闭页面即退出;应用打码完成后自动退出)")
     threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
         p.srv.serve_forever()

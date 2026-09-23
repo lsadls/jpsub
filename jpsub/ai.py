@@ -202,6 +202,7 @@ def translate_file(
     glossary: dict[str, str] | None = None,
     progress=None,
     quiet: bool = False,
+    force: bool = False,
 ) -> int:
     """分批翻译,结果按时间轴键追加写入 out_path;返回本次新翻句数。
 
@@ -210,10 +211,11 @@ def translate_file(
     整个任务在同一个多轮对话里完成:系统提示词只在首轮发送,
     之后每批作为对话延续,前缀命中服务商 prompt cache 可省 token。
     发给 AI 的只有段落原文(不带键),回复按行序对应;
-    写回 out 时带上时间轴键。已有译文的键自动跳过,可中断后重跑续翻。
+    写回 out 时带上时间轴键。已有译文的键自动跳过,可中断后重跑续翻;
+    force=True 时忽略已译与缓存,全部重新翻译。
     """
     items = read_lines(in_path)
-    done = read_done(out_path)
+    done = {} if force else read_done(out_path)
     todo = [(i, t) for i, t in items if i not in done]
     if out_path.exists() and todo:
         # 剔除将被重翻键的旧行(如上轮留下的 [[未译]] 占位),避免 out 里同键重复

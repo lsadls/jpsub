@@ -173,6 +173,7 @@ def realign_translations(
     old_out_text: str | None,
     old_segs: list[Segment],
     cache: TranslationCache,
+    restore_all: bool = False,
 ) -> str:
     """导出全量 translate-in.txt 后重排 translate-out.txt,使时间轴对齐。
 
@@ -182,6 +183,9 @@ def realign_translations(
     2. 翻译缓存(按原文文本为键,可靠);
     3. 旧 segments.json 里该原文的 tr 快照。
     都没有的键不写行,交给 AI 翻。返回新的 translate-out.txt 内容。
+
+    `restore_all`(extract 还原模式):旧 out 里缺失的键也按 2/3 回填,
+    把 segments 的 tr 快照完整还原到 out。
     """
     src_map = pending_map_from_in(in_txt)
     old_src = pending_map_from_str(old_in_text) if old_in_text else {}
@@ -195,7 +199,7 @@ def realign_translations(
                 old_out_keys.add(norm_key(ln.partition("\t")[0].strip()))
     lines: list[str] = []
     for key, text in src_map.items():
-        if old_out_text and key not in old_out_keys:
+        if old_out_text and key not in old_out_keys and not restore_all:
             continue
         tr = None
         if old_in_text and old_src.get(key) == text and old_out_text:

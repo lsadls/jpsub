@@ -154,6 +154,7 @@ document.onkeydown=e=>{
   else if(e.key==='ArrowRight'){setT(t+step);e.preventDefault()}
 };
 syncList();loadFrame();
+addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 </script>"""
 
 
@@ -227,6 +228,17 @@ class _Editor:
         self.duration = video_duration(self.video) if self.video else 0.0
         self.render_msg = ""
 
+        import time
+        self._last = time.time()  # 最近一次页面请求时间(判断页面是否已关闭)
+
+        def _maybe_quit():
+            """页面关闭后 2s 内没有新请求才退出(排除刷新误触)。"""
+            if time.time() - editor._last > 1.5:
+                self.srv.shutdown()
+
+        def _touch():
+            editor._last = time.time()
+
         editor = self
 
         class H(BaseHTTPRequestHandler):
@@ -242,6 +254,7 @@ class _Editor:
                 self.wfile.write(body)
 
             def do_GET(self):
+                _touch()
                 if self.path == "/":
                     body = _render_page(editor).encode()
                     self.send_response(200)
@@ -268,9 +281,13 @@ class _Editor:
                     self.send_error(404)
 
             def do_POST(self):
+                _touch()
                 n = int(self.headers.get("Content-Length", 0))
                 body = self.rfile.read(n)
-                if self.path == "/save":
+                if self.path == "/quit":
+                    self._json({"ok": True})
+                    threading.Timer(2.0, _maybe_quit).start()
+                elif self.path == "/save":
                     try:
                         rows = json.loads(body)
                         cnt = _save_rows(editor.work, rows)
@@ -355,7 +372,7 @@ def editor(target: Path) -> None:
         raise SystemExit(f"错误:{target} 里没有 translate-in/out.txt,先运行 extract")
     e = _Editor(target)
     url = f"http://127.0.0.1:{e.srv.server_address[1]}/"
-    print(f"译文调整器:{url}(浏览器未自动打开时手动访问;Ctrl+C 退出)")
+    print(f"译文调整器:{url}(浏览器未自动打开时手动访问;关闭页面即退出)")
     threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
         e.srv.serve_forever()
