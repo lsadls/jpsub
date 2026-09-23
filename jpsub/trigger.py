@@ -50,6 +50,7 @@ def select_keyframes(
     merge_short_pauses: bool = False,
     append_limit: float | None = None,
     masks: list[Image.Image] | None = None,
+    cores: list[Image.Image] | None = None,
 ) -> list[tuple[int, int, int]]:
     """返回 [(start_idx, end_idx, key_idx), ...]。
 
@@ -66,8 +67,13 @@ def select_keyframes(
     的变化若差分 >= `append_limit`(默认 change_threshold*4),说明旧文字被
     大面积替换——是**新段落**而非续写,仍在候选帧收尾,否则夹在两个长段落
     之间的小段落会被吞掉。
+
+    `cores` 为高门槛"文字核心掩膜"(同长度),用于换段/事后合并的消失比例
+    判定:亮背景场景下主掩膜噪声大、会稀释消失比例,核心掩膜只留白字,
+    判定可靠;暗文字在核心掩膜中为空,自动退化为不触发。
     """
     n = len(diffs)
+    ref = cores if cores is not None else masks  # 消失比例判定用的掩膜
     changed = [d >= change_threshold for d in diffs]
     spans: list[tuple[int, int, int]] = []
     start: int | None = None      # 当前段的起始帧
@@ -76,11 +82,11 @@ def select_keyframes(
     i = 0
     while i < n:
         if changed[i]:
-            if start is not None and masks is not None:
+            if start is not None and ref is not None:
                 # 连续变化中的换段检测:前一帧的笔画大量消失(相对>=50% 且
                 # 绝对量可观,排除抽帧抖动)说明旧文字被替换——小段落一闪
                 # 而过、没有静止区也会在此断开,否则会被当成连续打字吞掉。
-                rel, abs_removed = _removed_stats(masks[i - 1], masks[i])
+                rel, abs_removed = _removed_stats(ref[i - 1], ref[i])
                 if rel >= 0.5 and abs_removed >= 1.5:
                     key = cand if cand is not None else i - 1
                     spans.append((start, key, key))
@@ -125,17 +131,17 @@ def select_keyframes(
     for s in range(len(spans)):
         nxt = spans[s + 1][0] if s + 1 < len(spans) else n
         spans[s] = (spans[s][0], nxt - 1, spans[s][2])
-    if merge_short_pauses and masks is not None:
+    if merge_short_pauses and ref is not None:
         # 事后合并:前段关键帧的文字若仍(近乎)完整出现在后段关键帧中
         # (消失笔画 < 20%),说明前段只是后段的"打字过程",并入后段;
         # 否则(旧字消失=换段)一律保留。
         merged: list[tuple[int, int, int]] = []
         for s in spans:
-            prev_key = masks[merged[-1][2]] if merged else None
+            prev_key = ref[merged[-1][2]] if merged else None
             if (
                 prev_key is not None
                 and ImageStat.Stat(prev_key).mean[0] >= 0.5  # 空掩膜(纯色帧)不参与合并
-                and _removed_stats(prev_key, masks[s[2]])[0] < 0.2
+                and _removed_stats(prev_key, ref[s[2]])[0] < 0.2
             ):
                 merged[-1] = (merged[-1][0], s[1], s[2])
             else:

@@ -50,9 +50,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         a.add_argument("--fps", type=float, default=settings.FPS)
         a.add_argument(
             "--crop",
-            type=float,
+            type=str,
             default=settings.CROP,
-            help="截取视频底部高度的比例",
+            help="字幕区裁剪:单数字=底部占比(如 0.25),或 上:下:左:右 四边距(如 0.75:0.03:0.03:0.03)",
         )
         a.add_argument("--diff-threshold", type=float, default=settings.DIFF_THRESHOLD)
         a.add_argument(
@@ -240,14 +240,14 @@ def _ocr_dedup(engine, items: list[tuple[bytes, Path]]) -> list[str]:
 
 
 def _ocr_segments(
-    args, extract_dir: Path, engine
+    args, extract_dir: Path, engine, work: Path | None = None
 ) -> tuple[list[segment.Segment], list[Path]]:
     """抽帧 -> 筛选 -> OCR。返回 (字幕段列表, 真正送入 OCR 的帧路径)。"""
     paths = frames.extract_frames(
         args.video,
         extract_dir,
         fps=args.fps,
-        crop_ratio=args.crop,
+        crop=args.crop,
         start=args.start,
         end=args.end,
     )
@@ -258,7 +258,9 @@ def _ocr_segments(
     print(f"抽到 {len(paths)} 帧 (crop={args.crop})")
 
     # 停顿触发选关键帧,短停顿合并,只识别每段静止末帧
-    masks = frames.strip_static(frames.text_masks(paths))
+    # cores:高门槛文字核心掩膜,换段判定不受亮背景噪声稀释
+    masks, cores = frames.text_core_masks(paths)
+    masks, cores = frames.strip_static(masks), frames.strip_static(cores)
     diffs = trigger.mask_diffs(masks)
     spans = trigger.select_keyframes(
         diffs,
@@ -267,10 +269,29 @@ def _ocr_segments(
         max_run=args.max_run,
         merge_short_pauses=True,
         masks=masks,
+        cores=cores,
     )
     key_idx = [k for _, _, k in spans]
     # 无字帧靠 predict 内部跳过 rec,空文本在 build_segments 里被丢弃,无需额外检测
-    texts = _ocr_dedup(engine, [(masks[k].tobytes(), paths[k]) for k in key_idx])
+    # OCR 缓存:已识别过的帧序号/文本存工作目录,重跑时直接复用
+    ocr_cache_path = work / "ocr-cache.json" if work else None
+    ocr_cache: dict[str, str] = {}
+    if ocr_cache_path and ocr_cache_path.exists():
+        try:
+            ocr_cache = json.loads(ocr_cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            ocr_cache = {}
+    todo = [(masks[k].tobytes(), paths[k]) for k in key_idx if paths[k].name not in ocr_cache]
+    if len(todo) < len(key_idx):
+        print(f"OCR 缓存:复用 {len(key_idx) - len(todo)} 帧,新识别 {len(todo)} 帧")
+    fresh = _ocr_dedup(engine, todo) if todo else []
+    for (mask, p), text in zip(todo, fresh):
+        ocr_cache[p.name] = text
+    if ocr_cache_path and todo:
+        ocr_cache_path.write_text(
+            json.dumps(ocr_cache, ensure_ascii=False), encoding="utf-8"
+        )
+    texts = [ocr_cache.get(paths[k].name, "") for k in key_idx]
     saved = 100 * (1 - len(key_idx) / max(1, len(paths)))
     print(f"停顿触发:识别 {len(key_idx)}/{len(paths)} 帧,省 {saved:.0f}% OCR")
     timed = []
@@ -297,14 +318,15 @@ def _extract(args, engine=None) -> Path:
                 args.video,
                 extract_dir,
                 fps=args.fps,
-                crop_ratio=args.crop,
+                crop=args.crop,
                 start=args.start,
                 end=args.end,
             )
             print(f"抽到 {len(all_frames)} 帧 (仅抽帧不 OCR)")
             if args.selected_only:
                 # 统一用停顿触发筛选:只保留每段打字完成后的静止末帧
-                masks = frames.strip_static(frames.text_masks(all_frames))
+                masks, cores = frames.text_core_masks(all_frames)
+                masks, cores = frames.strip_static(masks), frames.strip_static(cores)
                 diffs = trigger.mask_diffs(masks)
                 # settle_frames+1:停顿必须"超过"阈值才收尾,恰好等于阈值的
                 # 短停顿也会走合并逻辑,避免打字中途同长度停顿切出多余关键帧
@@ -315,6 +337,7 @@ def _extract(args, engine=None) -> Path:
                     max_run=args.max_run,
                     merge_short_pauses=True,
                     masks=masks,
+                    cores=cores,
                 )
                 # 无字校验:先掩膜化(白字黑底,已剔除静态水印)再检测,
                 # 低亮度水印/背景纹理不会误触发检测框
@@ -342,9 +365,15 @@ def _extract(args, engine=None) -> Path:
                 shutil.copy2(fp, keep / fp.name)
             print(f"保留 {len(saved_frames)} 帧 -> {keep}")
         else:
-            if engine is None:
-                engine = _make_engine(args)
-            segs, _ = _ocr_segments(args, extract_dir, engine)
+            seg_file = work / "segments.json"
+            if seg_file.exists():
+                # 已有识别结果:跳过抽帧/OCR,直接重建 translate-in.txt
+                print(f"已有 {seg_file},跳过 OCR 重建 translate-in.txt")
+                segs = handoff.read_segments(seg_file)
+            else:
+                if engine is None:
+                    engine = _make_engine(args)
+                segs, _ = _ocr_segments(args, extract_dir, engine, work=work)
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
@@ -353,9 +382,29 @@ def _extract(args, engine=None) -> Path:
         return work
 
     cache = TranslationCache(args.cache or work / "cache.json")
-    pending = handoff.export_pending(
-        segs, cache, work / "translate-in.txt", with_index=not args.no_index
+    # 全量导出前暂存旧 in/out/segments:导出后按编号重排 out 并预填译文
+    in_txt, out_txt = work / "translate-in.txt", work / "translate-out.txt"
+    old_in = in_txt.read_text(encoding="utf-8") if in_txt.exists() else None
+    old_out = out_txt.read_text(encoding="utf-8") if out_txt.exists() else None
+    seg_file = work / "segments.json"
+    old_segs = handoff.read_segments(seg_file) if seg_file.exists() else []
+    items = handoff.export_pending(
+        segs, cache, in_txt, with_index=not args.no_index
     )
+    out_body = handoff.realign_translations(in_txt, old_in, old_out, old_segs, cache)
+    out_txt.write_text(out_body, encoding="utf-8")
+    # 回写译文到 segments(随 segments.json 持久化,重跑免重翻)
+    tr_by_text = {}
+    for ln in out_body.splitlines():
+        if "\t" in ln:
+            k, _, t = ln.partition("\t")
+            if t.strip():
+                src = dict(items).get(k.strip())
+                if src:
+                    tr_by_text[src] = t.strip()
+    for s in segs:
+        if tr_by_text.get(s.text):
+            s.tr = tr_by_text[s.text]
     comment_path = work / "comment.txt"  # download --comment 写入的视频描述
     handoff.write_segments(
         segs,
@@ -365,8 +414,9 @@ def _extract(args, engine=None) -> Path:
         else None,
     )
     print(f"工作目录:{work}")
-    print(f"待翻译 {len(pending)} 句 -> {work / 'translate-in.txt'}")
-    if pending:
+    todo = handoff.pending_texts(segs, cache)
+    print(f"待翻译 {len(todo)} 句 -> {work / 'translate-in.txt'}")
+    if todo:
         print("默认将自动调用 AI 翻译并渲染;加 --notrans 可停在此步")
     return work
 
@@ -384,24 +434,36 @@ def _load_meta(work: Path) -> dict:
 def _render(args) -> Path:
     work = args.work
     segs = handoff.read_segments(work / "segments.json")
-    # pending 快照从 translate-in.txt 反推(它就是导出时的原文顺序);
-    # 实在没有(旧目录且被清理)才回退 pending.json
+    # 编号->原文 映射从 translate-in.txt 反推(编号原样保留,允许不连续);
+    # 实在没有(旧目录且被清理)才回退旧 pending.json(编号即 1..N)
     in_path = work / "translate-in.txt"
-    pending = (
-        handoff.pending_from_in(in_path)
-        if in_path.exists()
-        else _load_meta(work).get("pending", [])
-    )
+    if in_path.exists():
+        src_map = handoff.pending_map_from_in(in_path)
+    else:
+        src_map = {
+            str(i): t for i, t in enumerate(_load_meta(work).get("pending", []), 1)
+        }
     cache = TranslationCache(args.cache or work / "cache.json")
 
     out_file = work / "translate-out.txt"
     if out_file.exists():
-        count, deleted = handoff.import_translations(out_file, cache, pending)
+        count, deleted = handoff.import_translations(out_file, cache, src_map)
         print(f"导入译文 {count} 条")
         if deleted:
             print(f"检测到 {len(deleted)} 行被删除,对应字幕将移除")
             deleted_set = set(deleted)
             segs = [s for s in segs if s.text not in deleted_set]
+        # 用 out 的最新译文刷新 segments 的 tr 快照并落盘
+        tr_by_text = {}
+        for ln in out_file.read_text(encoding="utf-8").splitlines():
+            if "\t" in ln:
+                k, _, t = ln.partition("\t")
+                if t.strip() and k.strip() in src_map:
+                    tr_by_text[src_map[k.strip()]] = t.strip()
+        for s in segs:
+            if tr_by_text.get(s.text):
+                s.tr = tr_by_text[s.text]
+        handoff.write_segments(segs, work / "segments.json")
     out = args.output or work.with_suffix(".ass")
     ass.write_ass(
         segs,
@@ -424,9 +486,14 @@ def _translate(args) -> Path:
     comment = getattr(args, "comment", None)  # 命令行指定优先
     if comment is None:
         comment = _load_meta(args.work).get("comment")
-    n = ai.translate_file(
-        in_path, out_path, cfg, batch_size=args.batch_size, comment=comment
-    )
+    try:
+        n = ai.translate_file(
+            in_path, out_path, cfg, batch_size=args.batch_size, comment=comment
+        )
+    except RuntimeError as e:
+        if "额度不足" in str(e):
+            raise SystemExit(f"\n提醒:{e}(已翻译部分已写入 {out_path},可充值后续翻)") from None
+        raise
     print(f"完成:{out_path}(新翻译 {n} 句)")
     return out_path
 

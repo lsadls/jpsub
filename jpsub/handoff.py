@@ -17,11 +17,19 @@ def write_segments(
     """segments 与翻译元信息(comment)合写进同一个 JSON。
 
     结构:{"segments": [...], "comment": ...},comment 是视频描述。
-    pending 快照不落盘——translate-in.txt 本身就是导出顺序的快照,渲染时反推。
+    每段带 tr(译文)快照,重跑时免重翻。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "segments": [{"start": s.start, "end": s.end, "text": s.text} for s in segments],
+        "segments": [
+            {
+                "start": s.start,
+                "end": s.end,
+                "text": s.text,
+                **({"tr": s.tr} if s.tr else {}),
+            }
+            for s in segments
+        ],
         "comment": comment,
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -31,7 +39,7 @@ def read_segments(path: Path) -> list[Segment]:
     data = json.loads(path.read_text(encoding="utf-8"))
     # 旧格式:顶层就是段落列表;新格式:包在 "segments" 键下
     items = data if isinstance(data, list) else data.get("segments", [])
-    return [Segment(d["start"], d["end"], d["text"]) for d in items]
+    return [Segment(d["start"], d["end"], d["text"], tr=d.get("tr")) for d in items]
 
 
 def read_meta(path: Path) -> dict:
@@ -57,73 +65,127 @@ def export_pending(
     out_txt: Path,
     *,
     with_index: bool = True,
-) -> list[str]:
-    """把待翻译的唯一原文写成纯文本,返回本次导出的原文顺序(即编号 1..N)。
+) -> list[tuple[str, str]]:
+    """把全部唯一原文写成纯文本(全量导出,命中缓存的也包含)。
 
-    with_index=True 时每行 '编号<TAB>原文';否则每行仅原文。
-    全部命中缓存时写出空文件并返回 []。
+    每行 `起-止<TAB>原文`,时间轴取该句首次出现段的起止秒(如 `12.5-14`),
+    用户可随意编辑/换行/增删行。返回 [(时间轴键, 原文), ...]。
     """
-    pending = pending_texts(segments, cache)
+    seen: dict[str, str] = {}
+    for s in segments:
+        if s.text and s.text not in seen:
+            seen[s.text] = f"{s.start:g}-{s.end:g}"
+    items = [(k, t) for t, k in seen.items()]  # [(时间轴键, 原文)]
     out_txt.parent.mkdir(parents=True, exist_ok=True)
     if with_index:
-        body = "".join(f"{i}\t{t}\n" for i, t in enumerate(pending, 1))
+        body = "".join(f"{k}\t{t}\n" for k, t in items)
     else:
-        body = "".join(f"{t}\n" for t in pending)
+        body = "".join(f"{t}\n" for _, t in items)
     out_txt.write_text(body, encoding="utf-8")
-    return pending
+    return items
 
 
-def pending_from_in(in_txt: Path) -> list[str]:
-    """从 translate-in.txt 反推 pending 快照(即当次导出的原文顺序)。
+def realign_translations(
+    in_txt: Path,
+    old_in_text: str | None,
+    old_out_text: str | None,
+    old_segs: list[Segment],
+    cache: TranslationCache,
+) -> str:
+    """导出全量 translate-in.txt 后重排 translate-out.txt,使时间轴对齐。
 
-    '编号<TAB>原文' 行取编号对应原文;无 TAB 的行按行序取原文。空行跳过。
+    每个时间轴键的译文来源优先级(**用户 in/out 优先**):
+    1. 旧 translate-out.txt 中同键的行——仅当旧 in 同键原文一致
+       (时间轴未漂移,用户/AI 写的内容原样保留);
+    2. 翻译缓存(按原文文本为键,可靠);
+    3. 旧 segments.json 里该原文的 tr 快照。
+    都没有的键不写行,交给 AI 翻。返回新的 translate-out.txt 内容。
     """
-    out: list[str] = []
-    for ln in in_txt.read_text(encoding="utf-8").splitlines():
+    src_map = pending_map_from_in(in_txt)
+    old_src = pending_map_from_str(old_in_text) if old_in_text else {}
+    old_tr_by_text = {s.text: s.tr for s in old_segs if s.text and s.tr}
+    lines: list[str] = []
+    for key, text in src_map.items():
+        tr = None
+        if old_in_text and old_src.get(key) == text and old_out_text:
+            for ln in old_out_text.splitlines():  # 同键同原文:用户优先
+                if ln.startswith(key + "\t") and ln.partition("\t")[2].strip():
+                    tr = ln.partition("\t")[2].strip()
+                    break
+        if not tr:
+            tr = cache.get(text)
+        if not tr:
+            tr = old_tr_by_text.get(text)
+        if tr:
+            lines.append(f"{key}\t{tr}")
+    return "".join(f"{ln}\n" for ln in lines)
+
+
+def pending_map_from_str(text: str) -> dict[str, str]:
+    """从「键<TAB>原文」文本反推 键->原文 映射(键为时间轴或行序号)。"""
+    out: dict[str, str] = {}
+    for pos, ln in enumerate(text.splitlines(), 1):
         if not ln.strip():
             continue
-        out.append(ln.split("\t", 1)[1] if "\t" in ln else ln)
+        if "\t" in ln:
+            key, _, t = ln.partition("\t")
+            out[key.strip()] = t
+        else:
+            out[str(pos)] = ln
     return out
+
+
+def pending_map_from_in(in_txt: Path) -> dict[str, str]:
+    """从 translate-in.txt 反推 编号->原文 映射(渲染导入译文时用)。
+
+    '编号<TAB>原文' 行按编号取;无 TAB 的行按行序编号 1..N。
+    编号允许不连续(用户手动删行后重跑),导入时按编号对应才不会错位。
+    """
+    return pending_map_from_str(in_txt.read_text(encoding="utf-8"))
 
 
 def import_translations(
     txt_path: Path,
     cache: TranslationCache,
-    pending: list[str],
+    src_map: dict[str, str],
 ) -> tuple[int, list[str]]:
     """读回译文写入缓存并落盘,返回 (成功条数, 被删除的原文列表)。
 
-    优先按 '编号<TAB>译文' 解析(编号 -> pending[编号-1]);若每行都没有 TAB,
-    则按行序与 pending 对齐。译文为空的行跳过。
-    translate-out.txt 里被删掉的行视为"删除该条字幕",其原文会出现在返回的
-    删除列表中,由调用方把对应字幕段从时间轴上移除。
+    src_map 是 translate-in.txt 的 键->原文 映射(键为时间轴)。
+    译文行按 '键<TAB>译文' 解析;若每行都没有 TAB,则按行序对齐。
+    **键<TAB>空(置空译文)= 删除该条字幕**,其原文出现在返回的删除列表中,
+    由调用方把对应字幕段从时间轴上移除;键不在 out 里 = 未翻译,保留原文。
     """
     lines = [ln for ln in txt_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     has_index = bool(lines) and all("\t" in ln for ln in lines)
+    order = list(src_map)
     count = 0
-    imported: set[int] = set()  # 已出现的 pending 位置(0-based)
+    deleted_keys: set[str] = set()
     for pos, line in enumerate(lines):
         if has_index:
-            idx_s, _, dst = line.partition("\t")
-            try:
-                src = pending[int(idx_s) - 1]
-                imported.add(int(idx_s) - 1)
-            except (ValueError, IndexError):
+            idx, _, dst = line.partition("\t")
+            if idx not in src_map:
                 continue
         else:
-            if pos >= len(pending):
+            if pos >= len(order):
                 continue
-            src, dst = pending[pos], line
-            imported.add(pos)
+            idx, dst = order[pos], line
         dst = dst.strip()
         if dst:
-            cache.put(src, dst)
+            cache.put(src_map[idx], dst)
             count += 1
+        else:
+            deleted_keys.add(idx)  # 置空译文 = 删除该条字幕
     cache.save()
-    deleted = [t for i, t in enumerate(pending) if i not in imported]
+    deleted = [t for key, t in src_map.items() if key in deleted_keys]
     return count, deleted
 
 
 def resolve(segments: list[Segment], cache: TranslationCache) -> dict[str, str]:
-    """段文本 -> 译文;缺译文的段回退为原文(不中断管道)。"""
-    return {s.text: (cache.get(s.text) or s.text) for s in segments if s.text}
+    """段文本 -> 译文。优先段上快照的 tr(用户编辑过 in/out 后最新),
+    其次翻译缓存,缺译文回退原文(不中断管道)。"""
+    out: dict[str, str] = {}
+    for s in segments:
+        if s.text:
+            out[s.text] = s.tr or cache.get(s.text) or s.text
+    return out

@@ -14,6 +14,7 @@ class Segment:
     start: float
     end: float
     text: str
+    tr: str | None = None    # 中文译文(缺省时渲染回退原文)
 
 
 def normalize(text: str) -> str:

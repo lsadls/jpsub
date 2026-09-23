@@ -17,25 +17,42 @@ def extract_frames(
     out_dir: Path,
     *,
     fps: float = 2.0,
-    crop_ratio: float = 0.25,
+    crop: str | float = "0.75:0.03:0.03:0.03",
     start: float | None = None,
     end: float | None = None,
 ) -> list[Path]:
-    """裁剪画面底部的字幕区,按 fps 抽帧。
+    """裁剪画面字幕区后按 fps 抽帧。
 
-    按 `crop_ratio` 取底部占比;`crop_ratio=1.0` 表示全屏不裁(screen 布局)。
+    `crop` 支持两种写法:
+    - 单数字(如 0.25):取底部该占比高度,兼容旧用法;>=1.0 表示全屏不裁。
+    - `上:下:左:右` 四边距(如 0.75:0.03:0.03:0.03):从各边裁掉该比例,
+      保留中间区域。默认裁掉顶部 75% 留底部字幕带。
 
     `start`/`end`(秒)限定只处理该时间区间,用于避开片头/片尾(如片尾滚动的
     素材名单)等不含正片字幕的画面。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     pattern = str(out_dir / "frame_%06d.jpg")
-    if crop_ratio >= 1.0:
-        vf = f"fps={fps}"
+    text = str(crop)
+    if ":" in text:  # 上:下:左:右 四边距
+        parts = [float(v) for v in text.split(":")]
+        if len(parts) != 4 or not all(0 <= v < 1 for v in parts):
+            raise ValueError(f"crop 四边距应为 0~1 的 上:下:左:右,得到 {crop}")
+        top, bottom, left, right = parts
+        if top + bottom >= 1 or left + right >= 1:
+            raise ValueError(f"crop 边距之和过大,得到 {crop}")
+        vf = (
+            f"crop=iw*{1 - left - right:.6f}:ih*{1 - top - bottom:.6f}:"
+            f"iw*{left:.6f}:ih*{top:.6f},fps={fps}"
+        )
     else:
-        if not 0 < crop_ratio <= 1:
-            raise ValueError(f"crop_ratio 必须在 (0,1] 内,得到 {crop_ratio}")
-        vf = f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),fps={fps}"
+        crop_ratio = float(text)
+        if crop_ratio >= 1.0:
+            vf = f"fps={fps}"
+        else:
+            if not 0 < crop_ratio <= 1:
+                raise ValueError(f"crop_ratio 必须在 (0,1] 内,得到 {crop_ratio}")
+            vf = f"crop=iw:ih*{crop_ratio}:0:ih*(1-{crop_ratio}),fps={fps}"
     cmd = [settings.binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y"]
     if start:
         cmd += ["-ss", str(start)]
@@ -47,7 +64,7 @@ def extract_frames(
     return sorted(out_dir.glob("frame_*.jpg"))
 
 
-def _binary_mask(image: Image.Image) -> Image.Image:
+def _binary_mask(image: Image.Image, *, bright_th: int = 170) -> Image.Image:
     """全分辨率二值文字掩膜(0/255),text_mask 用。"""
     rgb = image.convert("RGB")
     r, g, b = rgb.split()
@@ -57,10 +74,12 @@ def _binary_mask(image: Image.Image) -> Image.Image:
     # 阈值 25:文字笔画局部对比远高于半透明框透出的条纹纹理(实测两者差一个
     # 数量级),单独该条件即可分离文字与背景,暗文字(混光后 vivid≈160)也不漏
     binary = local.point(lambda p: 255 if p >= 25 else 0)
-    # 亮度门槛(vivid>=170):白色文字远高于此,而半透明字幕框的条纹动画、
-    # 边框装饰、背景中低亮度纹理都被剔除——否则剧烈动画场景(如条纹闪烁的
-    # 对话框)里静止文字的掩膜会被噪声淹没,静态判定完全失效导致吞段
-    bright = vivid.point(lambda p: 255 if p >= 170 else 0)
+    # 亮度门槛:白色文字远高于此,而半透明字幕框的条纹动画、边框装饰、
+    # 背景中低亮度纹理都被剔除——否则剧烈动画场景(如条纹闪烁的对话框)里
+    # 静止文字的掩膜会被噪声淹没,静态判定完全失效导致吞段。
+    # 核心掩膜用更高门槛 210:亮背景场景(天空/火焰)的噪声 vivid 多落在
+    # 170~210,唯有白字核心能干净分离,供换段判定使用。
+    bright = vivid.point(lambda p: 255 if p >= bright_th else 0)
     binary = ImageChops.multiply(binary, bright)
     # 中值滤波去掉孤立噪点,笔画(2px 以上)保留
     binary = binary.filter(ImageFilter.MedianFilter(3))
@@ -68,6 +87,8 @@ def _binary_mask(image: Image.Image) -> Image.Image:
     #(实线恒在→被 strip_static 剔除),静止区的差异信号随之归零
     binary = binary.filter(ImageFilter.MaxFilter(3))
     if ImageStat.Stat(binary).mean[0] < 0.5:
+        if bright_th >= 210:
+            return binary  # 核心掩膜允许为空(无白字),不做兜底
         # 兜底:高通会把大面积实心块(纯色画面/整屏字幕卡)内部清零;若局部
         # 掩膜几乎为空,回退到全局阈值(max 通道均值 + 余量,夹在 [80,240]),
         # 保证纯色帧之间仍有差异信号。
@@ -92,6 +113,29 @@ def text_mask(image: Image.Image) -> Image.Image:
     """
     binary = _binary_mask(image)
     return binary.resize(_DIFF_SIZE, Image.Resampling.NEAREST)
+
+
+def core_mask(image: Image.Image) -> Image.Image:
+    """高门槛"文字核心掩膜":只留白字核心,供换段判定。
+
+    亮背景场景(明亮天空、火焰、高对比动画)的主掩膜会被背景噪声淹没,
+    旧文字消失时的"消失比例"被稀释而无法触发换段。核心掩膜把门槛提到
+    210,实测能把这些场景的背景完全剔除、只留文字笔画。暗文字(vivid<210)
+    在此掩膜中为空,换段判定自动退化为不触发,与旧行为一致。
+    """
+    binary = _binary_mask(image, bright_th=210)
+    return binary.resize(_DIFF_SIZE, Image.Resampling.NEAREST)
+
+
+def text_core_masks(paths: list[Path]) -> tuple[list[Image.Image], list[Image.Image]]:
+    """批量生成主掩膜与核心掩膜,每帧只打开一次。"""
+    masks: list[Image.Image] = []
+    cores: list[Image.Image] = []
+    for p in paths:
+        with Image.open(p) as im:
+            masks.append(text_mask(im))
+            cores.append(core_mask(im))
+    return masks, cores
 
 
 def text_masks(paths: list[Path]) -> list[Image.Image]:
