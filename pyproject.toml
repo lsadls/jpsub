@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jpsub"
+version = "0.2.0"
+description = "日语视频(底部短句 / 全屏打字机长文) -> 中文外挂 ASS 字幕(本地 OCR + 外部 RAG agent 翻译)"
+requires-python = ">=3.12"
+dependencies = [
+  "pysubs2>=1.9",
+  "Pillow>=10",
+  "paddleocr>=3.7",
+  "paddlepaddle>=3.3",
+  "tqdm>=4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+jpsub = "jpsub.cli:main"
+
+[tool.setuptools]
+packages = ["jpsub"]
