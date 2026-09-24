@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-09-24 (4)
+
+### 破坏性重构：全面 segments.json 化（废弃 in/out 简易格式）
+
+- **segments.json 成为唯一数据源**：原文/译文统一存每段的 `text`/`tr`，翻译流程（`ai.translate_file` → `ai.translate_texts`）不再读写 translate-in/out.txt，译文直接写回 segments 并进缓存；`--notrans` 停在 segments.json；删除 `--no-index`。
+- **OCR 原始备份 `segments.orig.json`**：每次 OCR 完成后写入（仅原文），旧目录缺失时 `_save_work` 自动补建。
+- **译文调整器「还原改动」按钮**：从 `segments.orig.json` 一键撤销所有编辑（译文/增删/时间轴恢复到 OCR 原始状态），确认后刷新页面。编辑器改为直接读写 segments.json（保存时覆盖前仍自动备份），旧目录的 translate-out.txt 打开时自动一次性导入（只补缺不覆盖）。
+- **masks.txt → masks.json**：打码清单改为 JSON 数组（{start,end,x,y,w,h,effect}）；旧 masks.txt 仍兼容读取（`mask`/`maskapply` 默认路径自动回退），保存一律写 JSON。
+- **续翻/审查降级语义保留**：待翻句=段上无有效 tr 且缓存未命中；`[[未译]]` 占位存进 tr（调整器橙色显示、不进缓存、可重翻）；内容审查拦截自动降级 batch_size=1 重跑；额度不足/中断时已完成部分经 `on_batch` 回调落盘不丢。
+- **主页**：「未译」徽章改按 segments 统计；「烧录」按钮检测 masks.json（或旧 masks.txt）；文案同步。
+- 旧工作目录无需迁移：translate-out.txt 译文会在 translate/render/edit 时自动导入 segments，旧 in/out 文件保留不删但不再使用。
+
+### 新功能
+
+- **必剪字幕互转**：译文调整器新增「转换」按钮，`.bcc`(必剪 JSON) ↔ `.ass` 按扩展名自动互相转换（pysubs2，样式与 jpsub 默认样式一致），文件在工作目录/output/ 查找。
+- **工作目录新布局**：视频与 ASS 移入 `<视频名>.jpsub/` 工作目录内；旧布局（工作目录旁）自动兼容识别，查找时新布局优先。
+
+### 改进
+
+- **译文调整器增强**：原文列也可直接编辑；文本框按内容自适应高度；服务端退出后页面全屏遮罩提示「程序已退出」（/ping 轮询）。
+- **`ai.translate_texts` 重写**：签名改为 `(items, ...) -> dict{键:译文}`，新增 `on_batch` 每批回传部分结果（中断时已完成部分不丢），写回 segments 由调用方负责。
+- `maskapply` 支持 progress 回调。
+
 ## 2026-09-24 (3)
 
 ### 新功能

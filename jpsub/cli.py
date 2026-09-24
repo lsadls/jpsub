@@ -104,9 +104,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="只抽帧并筛选,不 OCR;筛选帧保存到 -o 工作目录",
         )
         a.add_argument(
-            "--no-index", action="store_true", help="translate-in.txt 不写编号"
-        )
-        a.add_argument(
             "--extract-only",
             action="store_true",
             help="只抽帧不 OCR,用于检查抽帧质量",
@@ -114,7 +111,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         a.add_argument(
             "--notrans",
             action="store_true",
-            help="只到产出 translate-in.txt 为止,不自动翻译不渲染",
+            help="只到 OCR 产出 segments.json 为止,不自动翻译不渲染",
         )
         a.add_argument(
             "--force",
@@ -146,7 +143,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         a.add_argument("--font-size", type=int, default=settings.FONT_SIZE)
         a.add_argument("--max-chars", type=int, default=settings.MAX_CHARS)
 
-    e = sub.add_parser("extract", help="抽帧/OCR/合并,产出待翻译文件")
+    e = sub.add_parser("extract", help="抽帧/OCR/合并,产出 segments.json(+原始备份)")
     e.add_argument("video", type=Path)
     e.add_argument("-o", "--work", type=Path, help="工作目录(默认 <视频>.jpsub)")
     e.add_argument(
@@ -184,8 +181,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--cache", type=Path, default=None, help="默认 <工作目录>/cache.json"
     )
 
-    t = sub.add_parser("translate", help="调用 AI API 翻译 translate-in.txt(可续翻)")
-    t.add_argument("work", type=Path, help="工作目录(含 translate-in.txt)")
+    t = sub.add_parser("translate", help="调用 AI API 翻译 segments.json(可续翻)")
+    t.add_argument("work", type=Path, help="工作目录(含 segments.json)")
     t.add_argument(
         "--comment",
         help="视频描述(如 剧场类型/背景设定),引导 AI 翻译时参考;默认读工作目录 comment.txt",
@@ -195,25 +192,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="重新翻译全部句子(默认已译的跳过,读缓存)",
     )
+    t.add_argument(
+        "--cache", type=Path, default=None, help="默认 <工作目录>/cache.json"
+    )
     add_api(t)
 
-    m = sub.add_parser("mask", help="打码选取器:鼠标框选区域,生成 masks.txt")
+    m = sub.add_parser("mask", help="打码选取器:鼠标框选区域,生成 masks.json")
     m.add_argument("video", type=Path)
     m.add_argument(
         "--masks",
         type=Path,
         default=None,
-        help="打码清单(默认 <视频工作目录>/masks.txt)",
+        help="打码清单(默认 <视频工作目录>/masks.json)",
     )
 
-    ma = sub.add_parser("maskapply", help="把 masks.txt 的打码应用到视频")
+    ma = sub.add_parser("maskapply", help="把 masks.json 的打码应用到视频")
     ma.add_argument("video", type=Path)
     ma.add_argument(
         "masks",
         type=Path,
         nargs="?",
         default=None,
-        help="默认 <视频工作目录>/masks.txt",
+        help="默认 <视频工作目录>/masks.json",
     )
     ma.add_argument(
         "-o", "--output", type=Path, default=None, help="默认 <视频>.masked.mp4"
@@ -225,7 +225,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
 
     ed = sub.add_parser(
-        "edit", help="浏览器调整译文:编辑/删除/新增 translate-out.txt 条目"
+        "edit", help="浏览器调整译文:编辑/删除/新增字幕,支持一键还原 OCR 原始结果"
     )
     ed.add_argument(
         "target", type=Path, help="工作目录(如 output/sm123.jpsub)或视频文件"
@@ -276,6 +276,39 @@ def _output_root() -> Path:
 
 def _default_work(video: Path) -> Path:
     return _output_root() / (video.stem + ".jpsub")
+
+
+def _work_of(video: Path) -> Path:
+    """视频所属工作目录:视频已在工作目录内(新布局)则为其所在目录,否则默认目录。"""
+    return video.parent if video.parent.name.endswith(".jpsub") else _default_work(video)
+
+
+def _ass_path(work: Path) -> Path:
+    """ASS 路径:工作目录内,以视频名命名(新布局)。"""
+    return work / (work.stem + ".ass")
+
+
+def _find_ass(work: Path) -> Path:
+    """找 ASS:新布局(工作目录内)优先,回退旧布局(工作目录旁)。"""
+    p = _ass_path(work)
+    if p.exists():
+        return p
+    return work.with_suffix(".ass")
+
+
+def _find_video(work: Path) -> Path | None:
+    """找视频:工作目录内(新布局)优先,回退旧布局(工作目录旁)。"""
+    for base in (work, work.parent):
+        for ext in (".mp4", ".mkv", ".webm"):
+            v = base / (work.stem + ext)
+            if v.exists():
+                return v
+    return None
+
+
+def _product_out(video: Path, suffix: str) -> Path:
+    """打码/烧录产物路径:工作目录内,以视频名命名。"""
+    return _work_of(video) / (video.stem + suffix)
 
 
 def _make_engine(args):
@@ -415,72 +448,52 @@ def _backup(work: Path, *files: Path) -> None:
             shutil.copy2(f, dest / f.name)
 
 
-def _export_handoff(
-    args, segs: list[segment.Segment], work: Path, *, restore: bool = False
+def _save_work(
+    args, segs: list[segment.Segment], work: Path, *, fresh: bool = False
 ) -> Path:
-    """导出 translate-in/out、同步 segments.json(单视频与批量模式共用)。
+    """把 OCR 段落写进工作目录(单视频与批量模式共用):
 
-    restore=True(extract 还原模式):以 segments 为准,in/out 全量重建,
-    tr 快照完整还原到 out(即「render 覆盖 segments,extract 覆盖 in/out」)。
+    - 旧 translate-out.txt 的译文一次性迁移进 segments(只补缺,不覆盖用户改动);
+    - segments.json 覆盖前自动备份到 backup/<时间戳>/;
+    - fresh=True(刚跑完 OCR)或没有原始备份时,同步写 segments.orig.json。
+
+    GUI 化后不再产出 translate-in/out.txt,原文/译文统一以 segments.json 为准。
     """
     cache = TranslationCache(args.cache or work / "cache.json")
-    # 全量导出前暂存旧 in/out/segments:导出后按编号重排 out 并预填译文
-    in_txt, out_txt = work / "translate-in.txt", work / "translate-out.txt"
-    old_in = in_txt.read_text(encoding="utf-8") if in_txt.exists() else None
-    old_out = out_txt.read_text(encoding="utf-8") if out_txt.exists() else None
-    seg_file = work / "segments.json"
-    old_segs = handoff.read_segments(seg_file) if seg_file.exists() else []
-    _backup(work, in_txt, out_txt, seg_file)  # 覆盖前备份(extract 还原/render 回写)
-    items = handoff.export_pending(segs, cache, in_txt, with_index=not args.no_index)
-    out_body = handoff.realign_translations(
-        in_txt, old_in, old_out, old_segs, cache, restore_all=restore
-    )
-    out_txt.write_text(out_body, encoding="utf-8")
-    # 回写译文到 segments(随 segments.json 持久化,重跑免重翻)
-    tr_by_text = {}
-    for ln in out_body.splitlines():
-        if "\t" in ln:
-            k, _, t = ln.partition("\t")
-            if t.strip() and not handoff.is_untranslated(t):
-                src = dict(items).get(k.strip())
-                if src:
-                    tr_by_text[src] = t.strip()
-    for s in segs:
-        if tr_by_text.get(s.text):
-            s.tr = tr_by_text[s.text]
-    # 以 out 时间轴为准同步段落:旧 out 有而新 out 没有的轴=用户删除,加轴=加段
-    old_out_keys = (
-        {
-            handoff.norm_key(ln.partition("\t")[0].strip())
-            for ln in old_out.splitlines()
-            if ln.strip()
-        }
-        if old_out
-        else set()
-    )
-    segs = handoff.sync_segments(segs, dict(items), out_body, allow_delete=old_out_keys)
+    handoff.import_out_to_segments(work, cache)  # 旧目录一次性迁移
     comment_path = work / "comment.txt"  # download --comment 写入的视频描述
     comment = (
         comment_path.read_text(encoding="utf-8").strip()
         if comment_path.exists()
         else None
     )
-    handoff.write_segments(
-        segs,
-        work / "segments.json",
-        comment=comment,
-    )
+    seg_file = work / "segments.json"
+    orig_file = work / handoff.ORIG_NAME
+    if seg_file.exists() and not fresh:
+        # 已有识别结果:同键同原文的段保留旧 tr 快照(重跑免重翻)
+        old = {
+            handoff.norm_key(handoff.make_key(s.start, s.end)): s
+            for s in handoff.read_segments(seg_file)
+        }
+        for s in segs:
+            o = old.get(handoff.norm_key(handoff.make_key(s.start, s.end)))
+            if o and o.text == s.text and not handoff.is_untranslated(o.tr or ""):
+                s.tr = o.tr
+    _backup(work, seg_file, orig_file)  # 覆盖前备份
+    handoff.write_segments(segs, seg_file, comment=comment)
+    if fresh or not orig_file.exists():
+        handoff.save_orig(segs, work)  # OCR 原始备份(调整器「还原改动」用)
     if not getattr(args, "batch", False):
         print(f"工作目录:{work}")
         todo = handoff.pending_texts(segs, cache)
-        print(f"待翻译 {len(todo)} 句 -> {work / 'translate-in.txt'}")
+        print(f"待翻译 {len(todo)} 句(共 {len(segs)} 段)")
         if todo:
-            print("默认将自动调用 AI 翻译并渲染;加 --notrans 可停在此步")
+            print("默认将自动调用 AI 翻译;加 --notrans 可停在此步")
     return work
 
 
 def ocr_batch_stage(args, engine, work: Path, progress=None, quiet=False) -> Path:
-    """批量模式阶段B:读取 _batch 元数据,OCR 关键帧,产出待翻译文件。
+    """批量模式阶段B:读取 _batch 元数据,OCR 关键帧,产出 segments.json。
 
     quiet=True 时不打印中间统计(缓存/去重/合并),由调用方统一展示。
     """
@@ -537,7 +550,7 @@ def ocr_batch_stage(args, engine, work: Path, progress=None, quiet=False) -> Pat
             timed.append((offset + i * frame_dur, text))
     segs = segment.build_segments(timed, frame_dur=frame_dur, threshold=args.similarity)
     _say(f"合并为 {len(segs)} 条字幕")
-    work = _export_handoff(args, segs, work)
+    work = _save_work(args, segs, work, fresh=True)
     shutil.rmtree(bdir, ignore_errors=True)
     return work
 
@@ -589,13 +602,13 @@ def _extract(args, engine=None) -> Path:
         else:
             seg_file = work / "segments.json"
             if seg_file.exists() and not getattr(args, "force", False):
-                # 已有识别结果:跳过抽帧/OCR,直接重建 translate-in.txt
-                print(f"已有 {seg_file},跳过 OCR 重建 translate-in.txt(--force 可强制重跑)")
+                # 已有识别结果:跳过抽帧/OCR,直接沿用(--force 可强制重跑)
+                print(f"已有 {seg_file},跳过 OCR(--force 可强制重跑)")
                 segs = handoff.read_segments(seg_file)
-            else:
-                if engine is None:
-                    engine = _make_engine(args)
-                segs, _ = _ocr_segments(args, extract_dir, engine, work=work)
+                return _save_work(args, segs, work, fresh=False)
+            if engine is None:
+                engine = _make_engine(args)
+            segs, _ = _ocr_segments(args, extract_dir, engine, work=work)
     finally:
         shutil.rmtree(extract_dir, ignore_errors=True)
 
@@ -603,7 +616,7 @@ def _extract(args, engine=None) -> Path:
         print(f"仅抽帧完成 -> {keep}")
         return work
 
-    return _export_handoff(args, segs, work, restore=True)
+    return _save_work(args, segs, work, fresh=True)
 
 
 def _load_meta(work: Path) -> dict:
@@ -618,62 +631,14 @@ def _load_meta(work: Path) -> dict:
 
 def _render(args) -> Path:
     work = args.work
-    segs = handoff.read_segments(work / "segments.json")
-    # 编号->原文 映射从 translate-in.txt 反推(编号原样保留,允许不连续);
-    # 实在没有(旧目录且被清理)才回退旧 pending.json(编号即 1..N)
-    in_path = work / "translate-in.txt"
-    if in_path.exists():
-        src_map = handoff.pending_map_from_in(in_path)
-    else:
-        src_map = {
-            str(i): t for i, t in enumerate(_load_meta(work).get("pending", []), 1)
-        }
+    seg_file = work / "segments.json"
     cache = TranslationCache(args.cache or work / "cache.json")
-
-    out_file = work / "translate-out.txt"
-    out_text = (
-        out_file.read_text(encoding="utf-8")
-        if out_file.exists() and out_file.stat().st_size > 0
-        else ""
-    )
-    if out_text:
-        count, deleted = handoff.import_translations(out_file, cache, src_map)
-        quiet = getattr(args, "batch", False)
-        if not quiet:
-            print(f"导入译文 {count} 条")
-        if deleted:
-            if not quiet:
-                print(f"检测到 {len(deleted)} 行被删除,对应字幕将移除")
-            deleted_set = set(deleted)
-            segs = [s for s in segs if s.text not in deleted_set]
-        # 用 out 的最新译文刷新 segments 的 tr 快照并落盘
-        tr_by_text = {}
-        for ln in out_file.read_text(encoding="utf-8").splitlines():
-            if "\t" in ln:
-                k, _, t = ln.partition("\t")
-                if (
-                    t.strip()
-                    and not handoff.is_untranslated(t)
-                    and k.strip() in src_map
-                ):
-                    tr_by_text[src_map[k.strip()]] = t.strip()
-        for s in segs:
-            if tr_by_text.get(s.text):
-                s.tr = tr_by_text[s.text]
-        # 同步段落:out 是最终裁决——out 缺少的轴=用户删除(不限 in 里的键);
-        # out 新增的轴=加段
-        segs = handoff.sync_segments(
-            segs,
-            src_map,
-            out_text,
-            allow_delete={handoff.make_key(s.start, s.end) for s in segs},
-        )
-        _backup(work, work / "segments.json")  # render 覆盖 segments 前备份
-        handoff.write_segments(segs, work / "segments.json")
-    out = args.output or work.with_suffix(".ass")
+    handoff.import_out_to_segments(work, cache)  # 旧目录一次性迁移(有 out 才生效)
+    segs = handoff.read_segments(seg_file)
+    out = args.output or _ass_path(work)
     tr_map = handoff.resolve(segs, cache)
     if not tr_map:
-        # 完全没有译文:用 in 文件的日文原文生成字幕
+        # 完全没有译文:用日文原文生成字幕
         if not getattr(args, "batch", False):
             print("没有译文,改用日文原文生成字幕")
         tr_map = {s.text: s.text for s in segs if s.text}
@@ -713,57 +678,96 @@ def _load_glossary(work: Path, args) -> dict[str, str]:
 
 
 def _translate(args) -> Path:
+    """翻译工作目录里的 segments.json:待翻句子发给 AI,译文写回段的 tr 并落盘。"""
     quiet = getattr(args, "batch", False)
-    in_path = args.work / "translate-in.txt"
-    if not in_path.exists():
-        raise SystemExit(f"错误:找不到 {in_path}")
-    out_path = args.work / "translate-out.txt"
-    _backup(args.work, out_path)  # 重新翻译会重写 out,先备份
+    work = args.work
+    seg_file = work / "segments.json"
+    if not seg_file.exists():
+        raise SystemExit(f"错误:找不到 {seg_file},先运行 extract")
+    cache = TranslationCache(args.cache or work / "cache.json")
+    handoff.import_out_to_segments(work, cache)  # 旧目录一次性迁移
+    segs = handoff.read_segments(seg_file)
+    force = getattr(args, "force", False)
+    if force:
+        _backup(work, seg_file)  # 重翻会覆盖全部译文,先备份
+        texts = list(dict.fromkeys(s.text for s in segs if s.text))
+    else:
+        texts = handoff.pending_texts(segs, cache)
+    if not texts:
+        if not quiet:
+            print("没有待翻译的句子(全部已译,--force 可强制重翻)")
+        return seg_file
+    items = [(t, t) for t in texts]  # 键即原文,译文按原文回填各段
+    _backup(work, seg_file)  # 翻译结果会写回 segments,先备份
     cfg = ai.resolve_config(args)
     comment = getattr(args, "comment", None)  # 命令行指定优先
     if comment is None:
-        comment = _load_meta(args.work).get("comment")
-    glossary = _load_glossary(args.work, args)
+        comment = _load_meta(work).get("comment")
+    glossary = _load_glossary(work, args)
     if glossary and not quiet:
         print(f"名词对照表:{len(glossary)} 条")
 
-    def _run(batch_size: int) -> int:
-        return ai.translate_file(
-            in_path,
-            out_path,
+    acc: dict[str, str] = {}  # 每批累积的部分结果:中断时保留已完成部分
+
+    def _persist() -> None:
+        """把累积译文写回 segments(含 [[未译]] 占位)与缓存并落盘。"""
+        if not acc:
+            return
+        n = 0
+        for s in segs:
+            tr = acc.get(s.text)
+            if tr is None:
+                continue
+            s.tr = tr  # 含未译占位:调整器里橙色显示,可重翻
+            if not handoff.is_untranslated(tr):
+                cache.put(s.text, tr)
+                n += 1
+        cache.save()
+        handoff.write_segments(
+            segs, seg_file, comment=_load_meta(work).get("comment")
+        )
+        if not quiet:
+            print(f"译文已写回 {seg_file}(新翻译 {n} 句)")
+
+    def _run(bs: int, todo: list[tuple[str, str]]):
+        return ai.translate_texts(
+            todo,
             cfg,
-            batch_size=batch_size,
+            batch_size=bs,
             comment=comment,
             glossary=glossary or None,
             progress=getattr(args, "tr_progress", None),
             quiet=quiet,
-            force=getattr(args, "force", False),
+            on_batch=acc.update,
         )
 
     try:
-        n = _run(args.batch_size)
+        _run(args.batch_size, items)
     except ai.CensoredError as e:
-        # 单句敏感会连累整批:停止本轮,改用逐句重跑(已译部分自动续翻)
+        # 单句敏感会连累整批:停止本轮,改用逐句重跑(已译部分自动跳过)
         if not quiet:
             print(f"\n内容审查拦截:{e}\n改用 batch_size=1 逐句重跑...")
-        n = _run(1)
+        _persist()
+        acc.clear()
+        # 逐句重跑全部待翻句(已译部分已随 _persist 落盘,未落盘的重发)
+        _run(1, items)
     except RuntimeError as e:
         if "额度不足" in str(e):
-            raise SystemExit(
-                f"\n提醒:{e}(已翻译部分已写入 {out_path},可充值后续翻)"
-            ) from None
+            _persist()  # 已翻译部分先落盘,充值后可续翻
+            raise SystemExit(f"\n提醒:{e}(已翻译部分已写回 segments,可充值后续翻)") from None
         raise
-    if not quiet:
-        print(f"完成:{out_path}(新翻译 {n} 句)")
-    return out_path
+    _persist()
+    return seg_file
 
 
 def _has_pending(work: Path) -> bool:
-    """translate-in.txt 是否有未翻译的句子。"""
-    p = work / "translate-in.txt"
-    return p.exists() and any(
-        ln.strip() for ln in p.read_text(encoding="utf-8").splitlines()
-    )
+    """segments.json 是否有未翻译的句子。"""
+    p = work / "segments.json"
+    if not p.exists():
+        return False
+    segs = handoff.read_segments(p)
+    cache = TranslationCache(work / "cache.json")
+    return bool(handoff.pending_texts(segs, cache))
 
 
 def _maybe_translate_render(args, work: Path) -> Path:
@@ -779,7 +783,7 @@ def _maybe_translate_render(args, work: Path) -> Path:
         _translate(args)
     if getattr(args, "batch", False):
         # 批量模式无人值守:照旧直接渲染
-        args.output = getattr(args, "output", None) or work.with_suffix(".ass")
+        args.output = getattr(args, "output", None) or _ass_path(work)
         return _render(args)
     if getattr(args, "burn", False):
         out = _render(args)
@@ -796,10 +800,10 @@ def _maybe_translate_render(args, work: Path) -> Path:
 
 
 def _burn(video: Path, ass_path: Path) -> Path:
-    """用 ffmpeg 把 ASS 字幕烧录进视频,输出 <视频名>.burned.mp4。"""
+    """用 ffmpeg 把 ASS 字幕烧录进视频,输出工作目录内 <视频名>.burned.mp4。"""
     import subprocess
 
-    out = _output_root() / (video.stem + ".burned.mp4")
+    out = _product_out(video, ".burned.mp4")
     # filter 级双重转义(filtergraph 层 + 选项层):反斜杠、引号、分隔符都要转
     escaped = str(ass_path)
     for _ in range(2):
@@ -839,14 +843,16 @@ def _download(args) -> Path:
     args.output = args.output or _output_root()
     video = download(args.url, args.output, comment=args.comment)
     args.video = video
-    # 已有 ASS 则跳过流水线直接烧录
-    if getattr(args, "burn", False) and video.with_suffix(".ass").exists():
-        return _burn(video, video.with_suffix(".ass"))
-    # 完整流水线:extract -> translate -> render(ASS 与视频同目录同名)
+    work = _work_of(video)  # 新布局视频已在工作目录内
+    # 已有 ASS 则跳过流水线直接烧录(新旧布局都认)
+    ass = _find_ass(work)
+    if getattr(args, "burn", False) and ass.exists():
+        return _burn(video, ass)
+    # 完整流水线:extract -> translate -> render(ASS 存工作目录内,以视频名命名)
     if not hasattr(args, "work"):  # download 子命令没有 --work 参数
         args.work = None  # 让 _extract 用默认 <视频>.jpsub
     work = _extract(args)
-    args.output = video.with_suffix(".ass")
+    args.output = _ass_path(work)
     return _maybe_translate_render(args, work)
 
 
@@ -914,10 +920,14 @@ def run(
         from .mask import apply_masks, default_masks_path
 
         masks = args.masks or default_masks_path(args.video)
-        out = args.output or args.video.with_name(args.video.stem + ".masked.mp4")
+        if not masks.exists() and masks.suffix == ".json":
+            old = masks.with_suffix(".txt")
+            if old.exists():
+                masks = old  # 兼容旧版 masks.txt
+        out = args.output or _product_out(args.video, ".masked.mp4")
         apply_masks(args.video, masks, out)
         if args.burn:  # 链式:打码完成后接着烧字幕
-            ass = args.video.with_suffix(".ass")
+            ass = _find_ass(_work_of(args.video))
             if ass.exists():
                 _burn(out, ass)
             else:
@@ -935,7 +945,7 @@ def run(
     work = args.work or _default_work(args.video)
     # --burn 且已有 ASS:跳过流水线直接烧录(--force 时强制重跑)
     if getattr(args, "burn", False) and not getattr(args, "force", False):
-        ass_path = getattr(args, "output", None) or work.with_suffix(".ass")
+        ass_path = getattr(args, "output", None) or _find_ass(work)
         if ass_path.exists():
             print(f"已有字幕 {ass_path},跳过流水线直接烧录")
             return _burn(args.video, ass_path)

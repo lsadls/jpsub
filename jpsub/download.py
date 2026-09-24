@@ -156,7 +156,8 @@ def download(
 ) -> Path:
     """下载视频(按 settings.NICO_VIDEO_QUALITY/NICO_AUDIO_QUALITY)并合并,返回视频文件路径。
 
-    comment 为视频描述,写入 <视频>.jpsub/comment.txt 供翻译提示使用。
+    视频保存到 out_dir/<标题>.jpsub/ 工作目录内,以视频名命名;
+    comment 为视频描述,写入工作目录 comment.txt 供翻译提示使用。
     quiet=True 时不打印任何过程信息(批量模式由状态板统一展示);
     quiet 下 progress("视频 43%"/"音频 88%") 回调双流下载进度。
     """
@@ -181,23 +182,24 @@ def download(
     else:
         fmt = video["format_id"]
         _say(f"选定格式:{fmt}(无独立音频流)")
+    work_dir = out_dir / f"{name}.jpsub"  # 视频直接下进工作目录(新布局)
     out_dir.mkdir(parents=True, exist_ok=True)
     _run_ytdlp([
         "-f", fmt,
         "--merge-output-format", "mp4",
-        "-o", str(out_dir / f"{name}.%(ext)s"),
+        "-o", str(work_dir / f"{name}.%(ext)s"),
         "--no-warnings",
         url,
     ], quiet=quiet, progress=progress)
-    # 只匹配文件(排除同名 .jpsub 工作目录),优先视频扩展名
+    # 只匹配文件(排除子目录),优先视频扩展名
     out_file = next(
-        (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(out_dir.glob(f"{name}{ext}"))),
+        (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(work_dir.glob(f"{name}{ext}"))),
         None,
-    ) or next((p for p in out_dir.glob(f"{name}.*") if p.is_file()), None)
+    ) or next((p for p in work_dir.glob(f"{name}.*") if p.is_file()), None)
     if out_file is None:
-        raise SystemExit(f"错误:下载后未找到 {out_dir}/{name}.*")
+        raise SystemExit(f"错误:下载后未找到 {work_dir}/{name}.*")
     if comment:
-        comment_path = out_file.parent / (out_file.stem + ".jpsub") / "comment.txt"
+        comment_path = out_file.parent / "comment.txt"
         comment_path.parent.mkdir(parents=True, exist_ok=True)
         comment_path.write_text(comment, encoding="utf-8")
         _say(f"视频描述:{comment} -> {comment_path}")

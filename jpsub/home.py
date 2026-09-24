@@ -22,9 +22,17 @@ from . import cli, handoff
 VID_EXTS = (".mp4", ".mkv", ".webm")
 
 # 任务标识用:子命令 → 操作名(任务显示为「视频名 操作」)
-_OP = {"download": "下载", "run": "翻译", "extract": "抽帧",
-       "render": "生成字幕", "translate": "续翻", "edit": "编辑",
-       "mask": "打码", "maskapply": "打码应用", "burn": "烧录"}
+_OP = {
+    "download": "下载",
+    "run": "翻译",
+    "extract": "抽帧",
+    "render": "生成字幕",
+    "translate": "续翻",
+    "edit": "编辑",
+    "mask": "打码",
+    "maskapply": "打码应用",
+    "burn": "烧录",
+}
 
 _PAGE = """<!doctype html><html lang=zh><meta charset=utf-8>
 <title>jpsub 主页</title><style>
@@ -88,6 +96,7 @@ button{white-space:nowrap}
 <button onclick=cmd('render',[])>生成字幕</button>
 <button onclick=cmd('translate',[])>续翻</button>
 <button onclick=cmd('translate',['--force'])>重翻</button>
+<button onclick=delWork()>删除工作目录</button>
 </div>
 </div>
 <div class=pane>
@@ -118,17 +127,18 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b style=color:#aaa>① 本地视频组</b><br>
 <b>翻译(run)</b> — 本地视频完整流水线<br>
 <b>翻译+烧录</b> — run --burn,已有ASS直接烧<br>
-<b>仅抽帧OCR</b> — --notrans,只产出日文原文清单<br>
-<b>extract</b> — 同run的抽取阶段(有segments时重建in/out)<br>
+<b>仅抽帧OCR</b> — --notrans,只产出 segments.json 不翻译<br>
+<b>extract</b> — 同run的抽取阶段(有segments时直接沿用)<br>
 <b>重新OCR翻译</b> — run --force,无视已有结果重跑全流程<br>
 <b>重新OCR</b> — extract --force,只重跑抽帧OCR<br>
 <b style=color:#aaa>① 对选中项</b><br>
-<b>编辑</b> — 浏览器译文调整器<br>
-<b>打码</b> — 打码选取器(生成masks.txt)<br>
-<b>烧录</b> — 把ASS烧进视频;有masks.txt时自动先打码再烧字幕<br>
+<b>编辑</b> — 浏览器译文调整器(可一键还原OCR原始结果)<br>
+<b>打码</b> — 打码选取器(生成masks.json)<br>
+<b>烧录</b> — 把ASS烧进视频;有masks.json时自动先打码再烧字幕<br>
 <b>生成字幕</b> — render,用现有译文生成ASS<br>
 <b>续翻</b> — translate,只翻没翻过的句子<br>
 <b>重翻</b> — translate --force,忽略译文和缓存全部重翻<br>
+<b>删除工作目录</b> — 删除选中条目的 <名称>.jpsub(字幕/译文全删,视频保留)<br>
 <b style=color:#aaa>其他</b><br>
 <b>② 打开文件夹</b> — 用系统文件管理器打开 output 目录<br>
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>
@@ -146,6 +156,12 @@ let selName=null;
 function setSel(n){selName=n;$('selname').textContent=n||'未选择';
   document.querySelectorAll('#list tr').forEach(tr=>
     tr.classList.toggle('sel',tr.dataset.name===n));}
+async function delWork(){
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  if(!confirm('确定删除 '+selName+' 的工作目录?\\n字幕、译文等将全部删除,视频保留'))return;
+  const j=await post('/del',{name:selName});
+  if(!j.ok)alert('失败:'+j.err);else{setSel(null);refresh()}
+}
 async function openDir(){
   const j=await post('/open',{});
   if(!j.ok)alert('失败:'+j.err);
@@ -168,10 +184,10 @@ async function refreshJobs(){
   const box=$('jobs');
   if(!j.jobs.length){box.innerHTML='';jobsLen='';selJob=-1;return}
   jobsLen=j.n;
-  box.innerHTML=j.jobs.map((x,i)=>`<div class="job ${x.st}${i===selJob?' sel':''}" onclick=pickJob(${i})>`+
+  box.innerHTML=j.jobs.map((x,i)=>`<div class="job ${x.st}${i===selJob?' sel':''}" ${x.st==='fail'&&x.line?`title="${esc(x.line)}"`:''} onclick=pickJob(${i})>`+
     (x.st==='run'?'⏳ ':x.st==='done'?'✅ ':'❌ ')+
     (x.label?`<b>${esc(x.label)}</b> `:'')+
-    esc(x.st==='run'?(x.line||'启动中…'):x.st==='done'?'已完成':'失败')+`</div>`).join('');
+    esc(x.st==='run'?(x.line||'启动中…'):x.st==='done'?'已完成':(x.line?`失败:${x.line}`:'失败'))+`</div>`).join('');
   const sj=j.jobs.find(x=>x.lines&&x.lines.length);
   const so=$('sout');
   so.textContent=sj?sj.lines.join('\\n'):'(输出显示在这里)';
@@ -207,35 +223,55 @@ setInterval(refresh,3000);setInterval(refreshJobs,1000);
 
 
 def _scan_output(root: Path) -> list[dict]:
-    """扫描 output/,按 stem 合并视频与工作目录。"""
+    """扫描 output/,以 <视频>.jpsub 工作目录为主条目。
+
+    新布局:视频/ASS 在工作目录内;旧布局(工作目录旁)也兼容识别。
+    """
     stems: dict[str, dict] = {}
     if not root.is_dir():
         return []
     for p in sorted(root.iterdir()):
         if p.name.startswith(("_", ".")):
             continue
-        if p.is_file() and p.suffix.lower() in VID_EXTS:
-            d = stems.setdefault(p.stem, {"name": p.stem})
-            d["video"] = True
-        elif p.is_dir() and p.name.endswith(".jpsub"):
-            stem = p.name[: -len(".jpsub")]
-            d = stems.setdefault(stem, {"name": stem})
-            d["work"] = True
+        if p.is_dir() and p.name.endswith(".jpsub"):
+            stems.setdefault(p.name[: -len(".jpsub")], {"name": p.name[: -len(".jpsub")]})
+        elif p.is_file() and p.suffix.lower() in VID_EXTS:
+            d = stems.setdefault(p.stem, {"name": p.stem})  # 旧布局散视频
+            d["legacy_video"] = True
     items = []
     for d in stems.values():
-        d.setdefault("video", False)
-        d.setdefault("work", False)
-        work = root / (d["name"] + ".jpsub")
-        d["ass"] = (root / (d["name"] + ".ass")).exists()
+        name = d["name"]
+        work = root / (name + ".jpsub")
+        video = None
+        for base in (work, root):  # 新布局优先,旧布局回退
+            for ext in VID_EXTS:
+                v = base / (name + ext)
+                if v.exists():
+                    video = v
+                    break
+            if video:
+                break
+        d["video"] = video is not None
+        d.setdefault("work", work.is_dir())
+        d["ass"] = (work / (name + ".ass")).exists() or (root / (name + ".ass")).exists()
         unt = 0
         if work.is_dir():
-            out = work / "translate-out.txt"
-            if out.exists():
-                unt = sum(
-                    1
-                    for ln in out.read_text(encoding="utf-8").splitlines()
-                    if ln.rstrip("\n").endswith(handoff.UNTRANSLATED_MARK)
-                )
+            seg_file = work / "segments.json"
+            if seg_file.exists():
+                try:
+                    segs = handoff.read_segments(seg_file)
+                    from .cache import TranslationCache
+
+                    cache = TranslationCache(work / "cache.json")
+                    unt = sum(
+                        1
+                        for s in segs
+                        if s.text
+                        and handoff.is_untranslated(s.tr or "")
+                        and cache.get(s.text) is None
+                    )
+                except Exception:  # noqa: BLE001
+                    unt = 0
         d["unt"] = unt
         items.append(d)
     items.sort(key=lambda d: d["name"])
@@ -255,7 +291,8 @@ class _Home:
         home = self
 
         def _sanitize(line: str) -> str:
-            """去掉进度条图形,只留名称+百分比+数字(如 tqdm 的 xx%|████| 2/5)。"""
+            """去 ANSI 颜色码和进度条图形,只留名称+百分比+数字。"""
+            line = re.sub(r"\x1b\[[0-9;]*m", "", line)
             m = re.match(r"^(.*?):\s*(\d+)%\|[^|]*\|\s*([^[\s]+)", line)
             if m:
                 return f"{m.group(1).strip()} {m.group(2)}% ({m.group(3)})"
@@ -318,7 +355,10 @@ class _Home:
                 try:
                     if home._engine is None:
                         j["line"] = "加载 OCR 模型中…"
-                    with contextlib.redirect_stdout(_Cap(j)):
+                    with (
+                        contextlib.redirect_stdout(_Cap(j)),
+                        contextlib.redirect_stderr(_Cap(j)),  # tqdm 走 stderr
+                    ):
                         cli.run(args, engine=home)  # home 自己充当引擎代理
                     j["st"] = "done"
                     j["line"] = "已完成"
@@ -350,9 +390,15 @@ class _Home:
         def _spawn_inline(args, op: str = "") -> None:
             tgt = getattr(args, "video", None) or getattr(args, "work", None)
             base = Path(tgt).name if tgt else "内联"
-            j = {"proc": None, "inline": True, "desc": "内联", "st": "run",
-                 "label": f"{base} {op}".strip(),
-                 "line": "排队/加载模型中…", "show": False}
+            j = {
+                "proc": None,
+                "inline": True,
+                "desc": "内联",
+                "st": "run",
+                "label": f"{base} {op}".strip(),
+                "line": "排队/加载模型中…",
+                "show": False,
+            }
             home.jobs.append(j)
             home._q.put((j, args))
 
@@ -386,7 +432,10 @@ class _Home:
                             del lines[:-200]
 
         def spawn(
-            desc: str, cmd: list[str], label: str = "", kind: str = "long",
+            desc: str,
+            cmd: list[str],
+            label: str = "",
+            kind: str = "long",
             show: bool = False,
         ) -> int:
             """kind: long=长任务等退出; launch=启动型(编辑/打码,常驻),立即标完成。"""
@@ -396,11 +445,23 @@ class _Home:
                 stderr=subprocess.STDOUT,
             )
             if kind == "launch":
-                j = {"proc": proc, "desc": desc, "st": "done",
-                     "label": label, "line": "已在浏览器打开", "show": show}
+                j = {
+                    "proc": proc,
+                    "desc": desc,
+                    "st": "done",
+                    "label": label,
+                    "line": "已在浏览器打开",
+                    "show": show,
+                }
             else:
-                j = {"proc": proc, "desc": desc, "st": "run",
-                     "label": label, "line": "", "show": show}
+                j = {
+                    "proc": proc,
+                    "desc": desc,
+                    "st": "run",
+                    "label": label,
+                    "line": "",
+                    "show": show,
+                }
             home.jobs.append(j)
             threading.Thread(target=_pump, args=(proc, j), daemon=True).start()
             return len(home.jobs) - 1
@@ -431,17 +492,24 @@ class _Home:
                     self._json({"items": _scan_output(home.root)})
                 elif self.path == "/jobs":
                     for j in home.jobs:
-                        if j["proc"] is not None and j["st"] == "run" \
-                                and j["proc"].poll() is not None:
+                        if (
+                            j["proc"] is not None
+                            and j["st"] == "run"
+                            and j["proc"].poll() is not None
+                        ):
                             j["st"] = "done" if j["proc"].returncode == 0 else "fail"
                     self._json(
                         {
                             "n": len(home.jobs),
                             "jobs": [
                                 {
-                                    "idx": i, "st": j["st"], "label": j["label"],
+                                    "idx": i,
+                                    "st": j["st"],
+                                    "label": j["label"],
                                     "line": j["line"],
-                                    "lines": j.get("lines", []) if j.get("show") else [],
+                                    "lines": j.get("lines", [])
+                                    if j.get("show")
+                                    else [],
                                 }
                                 for i, j in enumerate(home.jobs)
                             ],
@@ -476,6 +544,16 @@ class _Home:
                         else:
                             sp.Popen(["xdg-open", str(home.root)])
                         self._json({"ok": True})
+                    elif self.path == "/del":
+                        name = str(body.get("name", "")).strip()
+                        work = home.root / (name + ".jpsub")
+                        if not name or not work.is_dir():
+                            self._json({"ok": False, "err": "工作目录不存在"})
+                            return
+                        import shutil
+
+                        shutil.rmtree(work)
+                        self._json({"ok": True})
                     elif self.path == "/kill":
                         idx = int(body.get("idx", -1))
                         if not 0 <= idx < len(home.jobs):
@@ -499,8 +577,10 @@ class _Home:
                         path = home.root / ".home-batch.txt"
                         path.write_text(text, encoding="utf-8")
                         home.spawn(
-                            "批量脚本", [*exe, "-s", str(path)],
-                            label="批量脚本", show=True,
+                            "批量脚本",
+                            [*exe, "-s", str(path)],
+                            label="批量脚本",
+                            show=True,
                         )
                         self._json({"ok": True})
                     elif self.path == "/cmd":
@@ -509,12 +589,15 @@ class _Home:
                         flags = [str(f) for f in body.get("flags", [])]
                         url = str(body.get("url", "")).strip()
                         name = str(body.get("name", "")).strip()
-                        video = home.root / name
-                        for ext in VID_EXTS:
-                            if (home.root / (name + ext)).exists():
-                                video = home.root / (name + ext)
-                                break
                         work = home.root / (name + ".jpsub")
+                        video = home.root / name
+                        for base in (work, home.root):  # 新布局优先,旧布局回退
+                            for ext in VID_EXTS:
+                                if (base / (name + ext)).exists():
+                                    video = base / (name + ext)
+                                    break
+                            if video.is_file():
+                                break
 
                         def need(cond: bool, err: str) -> bool:
                             if not cond:
@@ -528,8 +611,15 @@ class _Home:
                                     return
                                 home.spawn(
                                     f"{url} {_OP[sub]}",
-                                    [*exe, "download", url, "-o", str(home.root),
-                                     *flags, *extra()],
+                                    [
+                                        *exe,
+                                        "download",
+                                        url,
+                                        "-o",
+                                        str(home.root),
+                                        *flags,
+                                        *extra(),
+                                    ],
                                     label=f"{url} {_OP[sub]}",
                                 )
                             else:
@@ -537,9 +627,10 @@ class _Home:
                                 if not need(p.is_file(), f"文件不存在:{p}"):
                                     return
                                 # run/extract 进程内执行:OCR 模型只加载一次,复用
-                                _spawn_inline(cli.parse_args(
-                                    [sub, str(p), *flags, *extra()]),
-                                    op=_OP.get(sub, sub))
+                                _spawn_inline(
+                                    cli.parse_args([sub, str(p), *flags, *extra()]),
+                                    op=_OP.get(sub, sub),
+                                )
                         elif sub in ("render", "translate", "edit"):
                             if not need(work.is_dir(), "请先在 ② 选择有工作目录的条目"):
                                 return
@@ -552,8 +643,11 @@ class _Home:
                         elif sub in ("mask", "maskapply", "burn"):
                             if not need(video.is_file(), "请先在 ② 选择有视频的条目"):
                                 return
-                            if sub == "burn" and (work / "masks.txt").is_file():
-                                # 链式:工作目录里有 masks.txt → 先打码再烧字幕
+                            if sub == "burn" and (
+                                (work / "masks.json").is_file()
+                                or (work / "masks.txt").is_file()
+                            ):
+                                # 链式:工作目录里有打码清单 → 先打码再烧字幕
                                 pre = ["maskapply", str(video), "--burn"]
                                 op = "打码+烧录"
                             elif sub == "burn":

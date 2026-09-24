@@ -1,7 +1,7 @@
-"""调用 OpenAI 兼容 API,把 translate-in.txt 翻译成 translate-out.txt。
+"""调用 OpenAI 兼容 API,翻译句子列表(原文 -> 中文译文)。
 
-提示词为 SKILL.md 的简化版;分批请求,每批结果立即追加写盘,支持中断续翻。
-"""
+提示词为 SKILL.md 的简化版;分批请求,译文以 dict 形式返回,由调用方
+写回 segments.json。"""
 
 from __future__ import annotations
 
@@ -11,18 +11,17 @@ import re
 import time
 import urllib.request
 from contextlib import nullcontext
-from pathlib import Path
 
 from tqdm import tqdm
 
 from . import settings
-from .handoff import UNTRANSLATED_MARK, is_untranslated
 
 # SKILL.md 简化版系统提示词
 SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句翻译为简体中文。
 
 背景:视频是日本例区文化(如淫梦文化)的二次创作(如 BB 剧场),注意例区用语、
 网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。人名和专有名词周围加空格
+(迫真)(大嘘)这种在句子末尾的梗保持为原汉字不翻译
 
 规则:
 - 忠实原意,语气自然简洁,不添油加醋、不省略信息;
@@ -162,39 +161,8 @@ def _parse_reply_lines(reply: str, count: int) -> list[str]:
     return out[:count]
 
 
-def read_lines(path: Path) -> list[tuple[str, str]]:
-    """读取「键<TAB>文本」清单(键为时间轴),返回 [(键, 文本), ...]。
-
-    无 TAB 的行按行序编号 1..N(用户手动删了时间轴也能处理)。
-    """
-    items: list[tuple[str, str]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        if "\t" in line:
-            key, _, text = line.partition("\t")
-            items.append((key.strip(), text.strip()))
-        else:
-            items.append((str(len(items) + 1), line.strip()))
-    return items
-
-
-def read_done(path: Path) -> set[str]:
-    """读取已有译文的键集合(用于续翻);译文为空或未译占位的行不算。"""
-    if not path.exists():
-        return set()
-    done: set[str] = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if "\t" in line:
-            key, _, text = line.partition("\t")
-            if text.strip() and not is_untranslated(text):
-                done.add(key.strip())
-    return done
-
-
-def translate_file(
-    in_path: Path,
-    out_path: Path,
+def translate_texts(
+    items: list[tuple[str, str]],
     cfg: dict,
     *,
     batch_size: int = 10,
@@ -202,32 +170,19 @@ def translate_file(
     glossary: dict[str, str] | None = None,
     progress=None,
     quiet: bool = False,
-    force: bool = False,
-) -> int:
-    """分批翻译,结果按时间轴键追加写入 out_path;返回本次新翻句数。
+    on_batch=None,
+) -> dict[str, str]:
+    """分批翻译句子列表,返回 {键: 译文};未返回译文的键记 UNTRANSLATED_MARK。
 
-    cfg 含 api_base/api_key/model,可选 proxy。
-    comment 为视频描述,追加到系统提示词里引导翻译风格。
-    整个任务在同一个多轮对话里完成:系统提示词只在首轮发送,
+    `items` 是 [(键, 原文), ...],键原样带回(通常为时间轴键或原文本身)。
+    cfg 含 api_base/api_key/model。comment 为视频描述,追加到系统提示词里
+    引导翻译风格。整个任务在同一个多轮对话里完成:系统提示词只在首轮发送,
     之后每批作为对话延续,前缀命中服务商 prompt cache 可省 token。
-    发给 AI 的只有段落原文(不带键),回复按行序对应;
-    写回 out 时带上时间轴键。已有译文的键自动跳过,可中断后重跑续翻;
-    force=True 时忽略已译与缓存,全部重新翻译。
+    批量失败/内容审查的降级语义由调用方处理(捕获 CensoredError 后改
+    batch_size=1 重跑未完成部分)。
     """
-    items = read_lines(in_path)
-    done = {} if force else read_done(out_path)
-    todo = [(i, t) for i, t in items if i not in done]
-    if out_path.exists() and todo:
-        # 剔除将被重翻键的旧行(如上轮留下的 [[未译]] 占位),避免 out 里同键重复
-        re_keys = {i for i, _ in todo}
-        kept = [
-            ln
-            for ln in out_path.read_text(encoding="utf-8").splitlines()
-            if not ln.strip() or ln.partition("\t")[0].strip() not in re_keys
-        ]
-        out_path.write_text(
-            "".join(ln + "\n" for ln in kept if ln.strip()), encoding="utf-8"
-        )
+    from .handoff import UNTRANSLATED_MARK
+
     system = SYSTEM_PROMPT
     if comment:
         system += (
@@ -240,23 +195,24 @@ def translate_file(
             + "\n".join(f"{k} → {v}" for k, v in glossary.items())
         )
     messages: list[dict] = [{"role": "system", "content": system}]
-    new_text = 0
+    results: dict[str, str] = {}
     # 按文本长度动态收缩批大小:每批字符总量不超过 BATCH_CHAR_TARGET,
     # 长句(如博客体字幕)自动减少每批句数,避免单批过长导致漏行/截断
-    if todo:
-        avg_len = sum(len(t) for _, t in todo) / len(todo)
+    if items:
+        avg_len = sum(len(t) for _, t in items) / len(items)
         if avg_len > 0:
             by_chars = max(1, round(settings.BATCH_CHAR_TARGET / avg_len))
             if by_chars < batch_size:
                 if not quiet:
-                    print(f"句子平均 {avg_len:.0f} 字,批大小 {batch_size} -> {by_chars}")
+                    print(
+                        f"句子平均 {avg_len:.0f} 字,批大小 {batch_size} -> {by_chars}"
+                    )
                 batch_size = min(batch_size, by_chars)
     with (
-        out_path.open("a", encoding="utf-8") as f,
-        (tqdm(total=len(todo), unit="句", desc="翻译中") if not quiet else nullcontext()) as bar,
-    ):
-        for off in range(0, len(todo), batch_size):
-            batch = todo[off : off + batch_size]
+        tqdm(total=len(items), unit="句", desc="翻译中") if not quiet else nullcontext()
+    ) as bar:
+        for off in range(0, len(items), batch_size):
+            batch = items[off : off + batch_size]
             messages.append({"role": "user", "content": "\n".join(t for _, t in batch)})
             try:
                 reply = _chat(messages, cfg)
@@ -295,18 +251,18 @@ def translate_file(
                 messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
                 got = [""] * len(batch)
             for (i, _src), zh in zip(batch, got):
-                if not zh:  # 缺行兜底:写入未译占位标记(多为内容审查拦截),便于人工定位
+                if not zh:  # 缺行兜底:记为未译占位标记(多为内容审查拦截),便于人工定位
                     if not quiet:
-                        print(f"警告:{i} 未返回译文,已在 out 标记 {UNTRANSLATED_MARK}")
+                        print(f"警告:{i} 未返回译文,已标记 {UNTRANSLATED_MARK}")
                     zh = UNTRANSLATED_MARK
-                f.write(f"{i}\t{zh}\n")  # 写回时带上时间轴键
-                f.flush()
-            new_text += len(batch)
+                results[i] = zh
+            if on_batch:  # 每批回传部分结果,调用方可在中断时保留已完成部分
+                on_batch({i: zh for (i, _), zh in zip(batch, got)})
             if not quiet:
                 bar.update(len(batch))
             if progress:
-                progress(min(off + len(batch), len(todo)), len(todo))
-    return new_text
+                progress(min(off + len(batch), len(items)), len(items))
+    return results
 
 
 def resolve_config(args) -> dict:

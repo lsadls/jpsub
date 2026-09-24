@@ -99,11 +99,12 @@ def _prepare(line: str, q=None):
 
         # --burn 且已有 ASS:跳过整条流水线直接烧录(与 cli.run 一致),在进程池并行
         if getattr(ns, "burn", False):
-            ass_path = (
-                video.with_suffix(".ass")
-                if cmd == "download"
-                else (getattr(ns, "output", None) or work.with_suffix(".ass"))
-            )
+            from .cli import _find_ass, _work_of
+
+            work = Path(getattr(ns, "work", None) or _work_of(video))
+            ass_path = getattr(ns, "output", None) or _find_ass(work)
+            if not Path(ass_path).exists() and cmd == "download":
+                ass_path = video.with_suffix(".ass")  # 旧布局回退
             if Path(ass_path).exists():
                 from .cli import _burn
 

@@ -1,13 +1,13 @@
-"""打码系统:鼠标框选时间轴区域 -> masks.txt -> ffmpeg 应用马赛克/纯色/图片。
+"""打码系统:鼠标框选时间轴区域 -> masks.json -> ffmpeg 应用马赛克/纯色/图片。
 
-masks.txt 每行一条(与 translate-out.txt 风格一致,制表符分隔):
-    起秒-止秒	X,Y,W,H	效果
-效果可为: blur[:强度] / color:RRGGBB / 图片路径(png/jpg)
-坐标为原视频像素,区域在起止时间内全程生效。
+masks.json 为 JSON 数组,每条:{"start","end","x","y","w","h","effect"}
+effect 可为: blur[:强度] / color:RRGGBB / 图片路径(png/jpg)
+坐标为原视频像素,区域在起止时间内全程生效。旧版 masks.txt 文本格式仍可读取。
 """
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tempfile
@@ -28,9 +28,6 @@ class MaskEntry:
     h: int
     effect: str  # blur / blur:N / color:RRGGBB / 图片路径
 
-    def line(self) -> str:
-        return f"{fmt_t(self.start)}-{fmt_t(self.end)}\t{self.x},{self.y},{self.w},{self.h}\t{self.effect}"
-
 
 def _t(s: str) -> float:
     """时刻:裸数字=秒,也支持 分:秒 / 时:分:秒。"""
@@ -40,7 +37,11 @@ def _t(s: str) -> float:
     parts = s.split(":")
     if all(re.fullmatch(r"\d+(?:\.\d+)?", p) for p in parts) and 2 <= len(parts) <= 3:
         nums = [float(p) for p in parts]
-        return (nums[0] * 3600 + nums[1] * 60 + nums[2]) if len(nums) == 3 else nums[0] * 60 + nums[1]
+        return (
+            (nums[0] * 3600 + nums[1] * 60 + nums[2])
+            if len(nums) == 3
+            else nums[0] * 60 + nums[1]
+        )
     raise ValueError(f"无法识别的时刻:{s!r}")
 
 
@@ -52,8 +53,31 @@ def _upload_dir() -> Path:
 
 
 def parse_masks(path: Path) -> list[MaskEntry]:
+    """读打码清单:masks.json(JSON);旧 masks.txt 文本格式兼容读取。"""
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    if text[0] == "[":  # JSON 格式
+        items = json.loads(text)
+        return [
+            MaskEntry(
+                float(m["start"]),
+                float(m["end"]),
+                int(m["x"]),
+                int(m["y"]),
+                int(m["w"]),
+                int(m["h"]),
+                str(m["effect"]),
+            )
+            for m in items
+        ]
+    return _parse_txt_masks(text)
+
+
+def _parse_txt_masks(text: str) -> list[MaskEntry]:
+    """旧版 masks.txt:每行 `起-止<TAB>X,Y,W,H<TAB>效果`。"""
     out = []
-    for ln in path.read_text(encoding="utf-8").splitlines():
+    for ln in text.splitlines():
         if not ln.strip():
             continue
         span, pos, effect = (ln.split("\t") + ["", ""])[:3]
@@ -64,17 +88,47 @@ def parse_masks(path: Path) -> list[MaskEntry]:
 
 
 def save_masks(entries: list[MaskEntry], path: Path) -> None:
+    entries = sorted(entries, key=lambda m: m.start)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "\n".join(m.line() for m in sorted(entries, key=lambda m: m.start)) + "\n",
+        json.dumps(
+            [
+                {
+                    "start": m.start,
+                    "end": m.end,
+                    "x": m.x,
+                    "y": m.y,
+                    "w": m.w,
+                    "h": m.h,
+                    "effect": m.effect,
+                }
+                for m in entries
+            ],
+            ensure_ascii=False,
+            indent=1,
+        )
+        + "\n",
         encoding="utf-8",
     )
 
 
 def video_size(video: Path) -> tuple[int, int]:
     r = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "v:0",
-         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video)],
-        capture_output=True, text=True, check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     w, h = r.stdout.strip().split(",")[:2]
     return int(w), int(h)
@@ -82,14 +136,26 @@ def video_size(video: Path) -> tuple[int, int]:
 
 def video_duration(video: Path) -> float:
     r = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "csv=p=0", str(video)],
-        capture_output=True, text=True, check=True,
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(video),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     return float(r.stdout.strip())
 
 
-def build_filter(entries: list[MaskEntry], base: Path | None = None) -> tuple[str, list[Path]]:
+def build_filter(
+    entries: list[MaskEntry], base: Path | None = None
+) -> tuple[str, list[Path]]:
     """生成 filter_complex 与按顺序追加的图片输入列表;图片相对路径基于 base。"""
     chains: list[str] = []
     images: list[Path] = []
@@ -102,8 +168,9 @@ def build_filter(entries: list[MaskEntry], base: Path | None = None) -> tuple[st
         if eff == "blur" or eff.startswith("blur:"):
             # boxblur=R:2:0:0 只模糊亮度通道(跳过色度,效果更好且不受色度限制);
             # luma radius 上限还随区域尺寸变化(约 min(w,h)/5),一并钳制
-            radius = max(2, min(58, int(eff.partition(":")[2] or 20),
-                                min(m.w, m.h) // 5))
+            radius = max(
+                2, min(58, int(eff.partition(":")[2] or 20), min(m.w, m.h) // 5)
+            )
             chains.append(
                 f"[{cur}]split[sa{i}][sb{i}];"
                 f"[sb{i}]crop={m.w}:{m.h}:{m.x}:{m.y},boxblur={radius}:2:0:0[bb{i}];"
@@ -128,19 +195,55 @@ def build_filter(entries: list[MaskEntry], base: Path | None = None) -> tuple[st
     return ";".join(chains), images
 
 
-def apply_masks(video: Path, masks_path: Path, output: Path) -> Path:
+def apply_masks(video: Path, masks_path: Path, output: Path, progress=None) -> Path:
+    """应用打码;progress(ffmpeg进度行文本) 回调用于网页显示进度。"""
     entries = parse_masks(masks_path)
     if not entries:
         raise SystemExit(f"错误:{masks_path} 里没有打码条目")
     fc, images = build_filter(entries, masks_path.parent)
-    cmd = [settings.binary("ffmpeg"), "-y", "-i", str(video)]
+    cmd = [settings.binary("ffmpeg"), "-y", "-nostdin", "-i", str(video)]
     for img in images:
         cmd += ["-i", str(img)]
-    cmd += ["-filter_complex", fc, "-map", f"[v{len(entries)}]", "-c:a", "copy"]
+    cmd += [
+        "-filter_complex",
+        fc,
+        "-map",
+        f"[v{len(entries)}]",
+        "-map",
+        "0:a?",
+        "-c:a",
+        "copy",
+    ]
     output.parent.mkdir(parents=True, exist_ok=True)
     cmd.append(str(output))
     print(f"应用 {len(entries)} 条打码:{video} -> {output}")
-    subprocess.run(cmd, check=True)
+    if progress is None:
+        subprocess.run(cmd, check=True)
+    else:
+        cmd += ["-progress", "pipe:1", "-nostats"]
+        p = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
+        cur: dict[str, str] = {}
+        for ln in p.stdout:
+            k, _, v = ln.strip().partition("=")
+            if not _:
+                continue
+            cur[k] = v
+            if k == "progress":  # 每块结尾键,此时该块信息齐全
+                parts = [
+                    f"{k2}={cur[k2]}"
+                    for k2 in ("out_time", "fps", "speed")
+                    if k2 in cur
+                ]
+                progress(" ".join(parts) if parts else ln.strip())
+                cur = {}
+        if p.wait() != 0:
+            raise RuntimeError(f"ffmpeg 失败(退出码 {p.returncode})")
     print(f"完成:{output}")
     return output
 
@@ -324,10 +427,24 @@ async function save(){
   msg.textContent=(await r.json()).ok?'已保存':'保存失败';
 }
 $('save').onclick=save;
-$('apply').onclick=async()=>{await save();applying=true;msg.textContent='应用打码中...';
+$('apply').onclick=async()=>{
+  await save();
+  if((await(await fetch('/exists')).json()).exists&&!confirm('输出文件(.masked.mp4)已存在,覆盖?'))return;
+  applying=true;msg.textContent='应用打码中...';
   await fetch('/apply',{method:'POST'});
   applying=false;msg.textContent=(await(await fetch('/apply-status')).json()).msg;};
-setInterval(async()=>{if(!applying)return;msg.textContent=(await(await fetch('/apply-status')).json()).msg},2000);
+let dead=false;  // 服务端退出后全屏遮罩提示
+setInterval(async()=>{  // /apply 是异步线程,持续轮询状态直到完成退出
+  if(dead)return;
+  try{
+    const j=await(await fetch('/apply-status')).json();
+    if(j.msg)msg.textContent=j.msg;
+  }catch(e){dead=true;
+    const d=document.createElement('div');
+    d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);color:#eee;display:flex;align-items:center;justify-content:center;font-size:22px;z-index:9999';
+    d.textContent='程序已退出,请关闭此页面';
+    document.body.appendChild(d);}
+},500);
 addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 function setT(v){t=Math.min(DUR,Math.max(0,v));$('t').value=fmt(t);$('slider').value=t;loadFrame()}
 $('t').onchange=()=>{const v=parseT($('t').value);if(!isNaN(v))setT(v)};
@@ -360,6 +477,7 @@ class _Picker:
         self._img_seq = 0
 
         import time
+
         self._last = time.time()  # 最近一次页面请求时间(判断页面是否已关闭)
 
         def _maybe_quit():
@@ -414,8 +532,11 @@ class _Picker:
                 elif self.path.startswith("/img?"):
                     import urllib.parse
 
-                    name = Path(urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                                .get("name", [""])[0]).name
+                    name = Path(
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(self.path).query
+                        ).get("name", [""])[0]
+                    ).name
                     fp = _upload_dir() / name
                     if not fp.is_file():  # 兼容旧 masks.txt 里存视频目录相对路径的写法
                         fp = picker.masks_path.parent / name
@@ -431,6 +552,9 @@ class _Picker:
                     self.wfile.write(body)
                 elif self.path == "/apply-status":
                     self._json({"msg": picker.apply_msg})
+                elif self.path == "/exists":
+                    out = picker.video.with_name(picker.video.stem + ".masked.mp4")
+                    self._json({"exists": out.exists()})
                 else:
                     self.send_error(404)
 
@@ -446,8 +570,15 @@ class _Picker:
                 elif self.path == "/save":
                     items = json.loads(body)
                     entries = [
-                        MaskEntry(float(m["start"]), float(m["end"]), int(m["x"]),
-                                  int(m["y"]), int(m["w"]), int(m["h"]), m["effect"])
+                        MaskEntry(
+                            float(m["start"]),
+                            float(m["end"]),
+                            int(m["x"]),
+                            int(m["y"]),
+                            int(m["w"]),
+                            int(m["h"]),
+                            m["effect"],
+                        )
                         for m in items
                     ]
                     save_masks(entries, picker.masks_path)
@@ -482,7 +613,7 @@ class _Picker:
         return parse_masks(self.masks_path) if self.masks_path.exists() else []
 
     def _save_upload(self, body: bytes, boundary: bytes) -> str:
-        # 极简 multipart:取第一个二进制段;存临时目录,masks.txt 记绝对路径
+        # 极简 multipart:取第一个二进制段;存临时目录,masks.json 记绝对路径
         parts = body.split(boundary)
         for part in parts:
             if b"Content-Type" not in part or b"filename" not in part:
@@ -498,8 +629,15 @@ class _Picker:
     def _apply(self):
         try:
             self.apply_msg = "应用打码中..."
-            out = self.video.with_name(self.video.stem + ".masked.mp4")
-            apply_masks(self.video, self.masks_path, out)
+            from .cli import _product_out
+
+            out = _product_out(self.video, ".masked.mp4")
+            apply_masks(
+                self.video,
+                self.masks_path,
+                out,
+                progress=lambda s: setattr(self, "apply_msg", f"应用打码中 {s}"),
+            )
             self.apply_msg = f"完成:{out},选择器即将退出"
             self._shutdown_soon()
         except Exception as e:  # noqa: BLE001
@@ -507,9 +645,11 @@ class _Picker:
 
     def _shutdown_soon(self):
         """给页面留 3 秒拉取最终状态,然后关闭服务(jpsub mask 进程随之退出)。"""
+
         def _stop():
             self.srv.shutdown()
             self.srv.server_close()
+
         threading.Timer(3, _stop).start()
 
 
@@ -517,8 +657,18 @@ def _entries_json(entries: list[MaskEntry]) -> str:
     import json
 
     return json.dumps(
-        [{"start": m.start, "end": m.end, "x": m.x, "y": m.y, "w": m.w,
-          "h": m.h, "effect": m.effect} for m in entries],
+        [
+            {
+                "start": m.start,
+                "end": m.end,
+                "x": m.x,
+                "y": m.y,
+                "w": m.w,
+                "h": m.h,
+                "effect": m.effect,
+            }
+            for m in entries
+        ],
         ensure_ascii=False,
     )
 
@@ -544,33 +694,53 @@ def fmt_t(t: float) -> str:
 def frame_jpeg(video: Path, t: float) -> bytes:
     """抓取指定时刻帧,返回 JPEG 字节(不经临时文件)。"""
     r = subprocess.run(
-        [settings.binary("ffmpeg"), "-ss", f"{t:.3f}", "-i", str(video),
-         "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
-        capture_output=True, check=True,
+        [
+            settings.binary("ffmpeg"),
+            "-ss",
+            f"{t:.3f}",
+            "-i",
+            str(video),
+            "-frames:v",
+            "1",
+            "-f",
+            "mjpeg",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
     )
     return r.stdout
 
 
 def default_masks_path(video: Path) -> Path:
-    """masks.txt 默认放在视频工作目录 <视频名>.jpsub/ 下。"""
-    return video.with_suffix(".jpsub") / "masks.txt"
+    """masks.json 默认放在视频工作目录 <视频名>.jpsub/ 下(旧 masks.txt 兼容读取)。"""
+    from .cli import _work_of
+
+    return _work_of(video) / "masks.json"
 
 
 def picker(video: Path, masks_path: Path | None = None) -> None:
-    """启动浏览器框选取景器;masks.txt 默认在视频工作目录 <视频名>.jpsub/ 下。"""
+    """启动浏览器框选取景器;masks.json 默认在视频工作目录 <视频名>.jpsub/ 下。"""
     import threading
     import webbrowser
 
     if not video.exists():
         raise SystemExit(f"错误:视频不存在:{video}")
     masks_path = masks_path or default_masks_path(video)
+    # 兼容旧版:指定的是 masks.txt 或旧文件存在时,沿用旧路径读取,保存仍写该路径
+    if masks_path == default_masks_path(video) and not masks_path.exists():
+        old = masks_path.with_suffix(".txt")
+        if old.exists():
+            masks_path = old
     masks_path.parent.mkdir(parents=True, exist_ok=True)
     # 清理旧版本遗留在视频目录里的上传图片(现在统一存临时目录)
     for old in video.parent.glob("mask_img_*"):
         old.unlink(missing_ok=True)
     p = _Picker(video, masks_path)
     url = f"http://127.0.0.1:{p.srv.server_address[1]}/"
-    print(f"打码选取器:{url}(浏览器未自动打开时手动访问;关闭页面即退出;应用打码完成后自动退出)")
+    print(
+        f"打码选取器:{url}(浏览器未自动打开时手动访问;关闭页面即退出;应用打码完成后自动退出)"
+    )
     threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
         p.srv.serve_forever()

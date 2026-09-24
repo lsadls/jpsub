@@ -1,9 +1,10 @@
-"""译文调整系统:浏览器编辑 translate-out.txt(改译文/删字幕/新增字幕),保存后可直接生成 ASS。
+"""译文调整系统:浏览器编辑 segments.json(改译文/删字幕/新增字幕),保存后可直接生成 ASS。
 
 用法:`jpsub edit <工作目录或视频>`,模仿打码选取器的交互:
-- 每行 = 一条字幕(时间轴 + 日文原文 + 中文译文),译文改动即写回 out 文件;
-- 译文置空/删除行 = 删除该条字幕(out 缺行即删除,与 render 语义一致);
+- 每行 = 一条字幕(时间轴 + 日文原文 + 中文译文),改动即写回 segments.json;
+- 译文置空/删除行 = 删除该条字幕;`[[未译]]` 行橙色提示;
 - 可新增字幕(时间轴+文本);时间轴输入兼容 mm:ss / 秒数,保存时统一为军方时间键;
+- 「还原改动」从 OCR 原始备份 segments.orig.json 一键恢复;
 - 「生成字幕」按钮等价于 `jpsub render <工作目录>`。
 """
 
@@ -32,7 +33,8 @@ td,th{border:1px solid #444;padding:3px 6px;text-align:left;vertical-align:top}
 tr.act{color:#8f8}
 .jump{cursor:pointer;color:#8cf;padding:0 4px}
 .del{color:#f88;cursor:pointer}
-.src{color:#999;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
+textarea.src,textarea.tr{overflow:hidden;resize:none;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
+.src{color:#999}
 td:nth-child(1),th:nth-child(1){width:200px}
 tr.unt .tr{color:#f80}
 #msg{color:#fc6;min-height:1.2em}
@@ -51,6 +53,9 @@ input.tin{width:60px}
 <div style=margin-top:6px><button id=add>＋在当前时间新增字幕</button></div>
 <div style=margin-top:6px>
 <button id=save>保存</button> <button id=render>生成字幕</button>
+<button id=restore>还原改动</button>
+@@BURN@@<button id=b2a>转换</button>
+<input id=convf type=text style=width:180px value="@@STEM@@.bcc" title="字幕文件名(.bcc 或 .ass),按扩展名自动互相转换,在工作目录/output/查找">
 @@BURN@@
 <div id=msg></div>
 <span style=color:#888>译文留空 = 删除该字幕;保存时未列出/已删的行不写回</span>
@@ -95,15 +100,19 @@ function syncList(){
       `<button class=st data-i=${i} data-k=end title=设为当前时间>止→</button>`+
       `<button class=del data-i=${i} title=删除该字幕>✕</button>`+
       `</div></td>`+
-      `<td class=src>${esc(r.src)}</td>`+
-      `<td><textarea class=tr data-i=${i} rows=2 style=width:100%;box-sizing:border-box>${esc(r.text)}</textarea></td>`;
+      `<td><textarea class=src data-i=${i} style=width:100%;box-sizing:border-box>${esc(r.src)}</textarea></td>`+
+      `<td><textarea class=tr data-i=${i} style=width:100%;box-sizing:border-box>${esc(r.text)}</textarea></td>`;
     tb.appendChild(tr);
   });
+  const fit=ta=>{ta.style.height='auto';ta.style.height=ta.scrollHeight+'px'};
+  tb.querySelectorAll('textarea').forEach(ta=>{fit(ta);ta.oninput=()=>fit(ta)});
   tb.querySelectorAll('input.tin').forEach(inp=>inp.onchange=()=>{
     const v=parseT(inp.value);if(!isNaN(v))rows[+inp.dataset.i][inp.dataset.k]=v;
     syncList();});
   tb.querySelectorAll('button.st').forEach(b=>b.onclick=()=>{
     rows[+b.dataset.i][b.dataset.k]=+t.toFixed(2);syncList();});
+  tb.querySelectorAll('textarea.src').forEach(ta=>ta.onchange=()=>{
+    rows[+ta.dataset.i].src=ta.value});
   tb.querySelectorAll('textarea.tr').forEach(ta=>ta.onchange=()=>{
     rows[+ta.dataset.i].text=ta.value});
   tb.querySelectorAll('.del').forEach(d=>d.onclick=()=>{rows.splice(+d.dataset.i,1);syncList();});
@@ -115,6 +124,15 @@ $('add').onclick=()=>{
   if(idx<0)idx=rows.length;
   rows.splice(idx,0,row);
   syncList();msg.textContent='已新增,记得填写时间与译文'};
+$('b2a').onclick=async()=>{
+  msg.textContent='转换中...';
+  const j=await post2('/conv',{file:$('convf').value.trim()});
+  msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
+};
+function post2(path,body){
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(r=>r.json());
+}
 async function save(){
   const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(rows)});
@@ -126,6 +144,12 @@ $('render').onclick=async()=>{
   msg.textContent='生成字幕中...';
   const j=await(await fetch('/render',{method:'POST'})).json();
   msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
+};
+$('restore').onclick=async()=>{
+  if(!confirm('确定还原到 OCR 原始结果?所有编辑(译文/增删)都会撤销'))return;
+  const j=await(await fetch('/restore',{method:'POST'})).json();
+  if(j.ok)location.reload();
+  else msg.textContent='失败:'+j.err;
 };
 const burn=document.getElementById('burn');
 if(burn)burn.onclick=async()=>{
@@ -154,69 +178,135 @@ document.onkeydown=e=>{
   else if(e.key==='ArrowRight'){setT(t+step);e.preventDefault()}
 };
 syncList();loadFrame();
+let dead=false;  // 服务端退出后全屏遮罩提示
+setInterval(async()=>{
+  if(dead)return;
+  try{await fetch('/ping')}
+  catch(e){dead=true;
+    const d=document.createElement('div');
+    d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.78);color:#eee;display:flex;align-items:center;justify-content:center;font-size:22px;z-index:9999';
+    d.textContent='程序已退出,请关闭此页面';
+    document.body.appendChild(d);}
+},1000);
 addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 </script>"""
 
 
 def _read_rows(work: Path) -> list[dict]:
-    """合并 in(原文)与 out(译文)为行列表,按时间排序。"""
-    in_map = (
-        handoff.pending_map_from_in(work / "translate-in.txt")
-        if (work / "translate-in.txt").exists()
-        else {}
-    )
-    out_map: dict[str, str] = {}
-    out_path = work / "translate-out.txt"
-    if out_path.exists():
-        for ln in out_path.read_text(encoding="utf-8").splitlines():
-            if not ln.strip():
-                continue
-            k, _, t = ln.partition("\t")
-            k = handoff.norm_key(k.strip())
-            if k not in out_map:  # 重复键取首行
-                out_map[k] = t
-    keys = list(dict.fromkeys(list(out_map) + list(in_map)))
-    rows = []
-    for k in keys:
-        r = handoff.parse_key(k)
-        start, end = r if r else (float("inf"), float("inf"))
-        rows.append(
-            {
-                "key": k,
-                "start": start,
-                "end": end,
-                "src": in_map.get(k, ""),
-                "text": out_map.get(k, ""),
-            }
-        )
+    """读 segments.json 为行列表,按时间排序;未译段显示占位标记。"""
+    segs = handoff.read_segments(work / "segments.json")
+    rows = [
+        {
+            "start": s.start,
+            "end": s.end,
+            "src": s.text or "",
+            "text": s.tr if s.tr and not handoff.is_untranslated(s.tr) else handoff.UNTRANSLATED_MARK,
+        }
+        for s in segs
+    ]
     rows.sort(key=lambda r: (r["start"], r["end"]))
     return rows
 
 
 def _save_rows(work: Path, rows: list[dict]) -> int:
-    items = []
+    """行列表写回 segments.json:译文置空/删除行 = 删除该字幕;
+    译文为占位标记 = 保持未译。新增行(src 为空)文本即译文。"""
+    from . import cli
+    from .segment import Segment
+
+    segs: list[Segment] = []
     for r in rows:
         r2 = handoff.parse_key(f"{fmt_t(r['start'])}-{fmt_t(r['end'])}")
-        k = handoff.make_key(*r2) if r2 else str(r.get("key", "")).strip()
-        if not k:
+        if not r2:
             continue
+        start, end = r2
+        src = str(r.get("src", "")).strip()
         t = str(r.get("text", "")).strip()
+        if t == handoff.UNTRANSLATED_MARK:
+            segs.append(Segment(start, end, src, tr=None))  # 保持未译
+            continue
         if not t or "\t" in t or "\n" in t:
             continue  # 空/损坏行不写 = 删除
-        items.append((r2[0] if r2 else float("inf"), f"{k}\t{t}"))
-    items.sort(key=lambda x: x[0])
-    (work / "translate-out.txt").write_text(
-        "".join(ln + "\n" for _, ln in items), encoding="utf-8"
+        segs.append(Segment(start, end, src or t, tr=t))
+    segs.sort(key=lambda s: s.start)
+    cli._backup(work, work / "segments.json")  # 覆盖前备份
+    handoff.write_segments(
+        segs,
+        work / "segments.json",
+        comment=handoff.read_meta(work / "segments.json").get("comment"),
     )
-    return len(items)
+    return len(segs)
 
 
 def _find_video(work: Path) -> Path | None:
-    for ext in (".mp4", ".mkv", ".webm"):
-        v = work.with_suffix(ext)
-        if v.exists():
-            return v
-    return None
+    """新布局:视频在工作目录内;旧布局:工作目录旁。"""
+    from .cli import _find_video as _cli_find
+
+    return _cli_find(work)
+
+
+def _make_ass_style(subs) -> None:
+    """给 SSAFile 配置与 ass.write_ass 相同的 Default 样式。"""
+    import pysubs2
+
+    from . import settings
+
+    style = pysubs2.SSAStyle()
+    style.fontname = "Noto Sans CJK SC"
+    style.fontsize = 54
+    style.primarycolor = pysubs2.Color(255, 255, 255, 0)
+    r, g, b = settings.OUTLINE_COLOR
+    style.outlinecolor = pysubs2.Color(r, g, b, 0)
+    style.outline = settings.OUTLINE_WIDTH
+    style.shadow = settings.SHADOW
+    subs.styles["Default"] = style
+
+
+def _bcc2ass(src: Path) -> Path:
+    """必剪 .bcc(JSON) → .ass,输出在源文件旁。"""
+    import pysubs2
+
+    data = json.loads(src.read_text(encoding="utf-8"))
+    subs = pysubs2.SSAFile()
+    _make_ass_style(subs)
+    for ev in data.get("body", []):
+        text = str(ev.get("content", "")).replace("\n", "\\N").strip()
+        if not text:
+            continue
+        subs.append(pysubs2.SSAEvent(
+            start=int(float(ev.get("from", 0)) * 1000),
+            end=int(float(ev.get("to", 0)) * 1000),
+            text=text,
+        ))
+    out = src.with_suffix(".ass")
+    subs.save(str(out), encoding="utf-8")
+    return out
+
+
+def _ass2bcc(src: Path) -> Path:
+    """.ass → 必剪 .bcc(JSON),输出在源文件旁。"""
+    import pysubs2
+
+    subs = pysubs2.load(str(src), encoding="utf-8")
+    body = [
+        {
+            "from": round(e.start / 1000, 3),
+            "to": round(e.end / 1000, 3),
+            "location": 1,
+            "content": e.plaintext.strip(),
+        }
+        for e in subs.events
+        if not e.is_comment and e.plaintext.strip()
+    ]
+    out = src.with_suffix(".bcc")
+    out.write_text(json.dumps({
+        "float": 1, "font_size": 0.4, "font_opacity": 70,
+        "spatial_type": 0.6, "line_alignment": 1,
+        "font_border_width": 0, "font_border_opacity": 70,
+        "shadow_width": 0, "font_spacing": 0,
+        "body": body,
+    }, ensure_ascii=False), encoding="utf-8")
+    return out
 
 
 class _Editor:
@@ -255,7 +345,9 @@ class _Editor:
 
             def do_GET(self):
                 _touch()
-                if self.path == "/":
+                if self.path == "/ping":
+                    self._json({})
+                elif self.path == "/":
                     body = _render_page(editor).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -295,10 +387,43 @@ class _Editor:
                         self._json({"ok": True, "n": cnt})
                     except Exception as e:  # noqa: BLE001
                         self._json({"ok": False, "err": str(e)})
+                elif self.path == "/conv":
+                    try:
+                        f = Path(json.loads(body).get("file", "")).strip()
+                        src = Path(f) if Path(f).is_absolute() else None
+                        if src is None:
+                            for base in (editor.work, editor.work.parent):
+                                if (base / f).exists():
+                                    src = base / f
+                                    break
+                            else:
+                                src = editor.work / f
+                        if not src.is_file():
+                            raise FileNotFoundError(f"找不到文件:{src}")
+                        ext = src.suffix.lower()
+                        if ext == ".bcc":
+                            out = _bcc2ass(src)
+                        elif ext == ".ass":
+                            out = _ass2bcc(src)
+                        else:
+                            raise ValueError("扩展名必须是 .bcc 或 .ass")
+                        self._json({"ok": True, "out": str(out)})
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False, "err": str(e)})
                 elif self.path == "/render":
                     try:
                         out = editor.run_render()
                         self._json({"ok": True, "out": str(out)})
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False, "err": str(e)})
+                elif self.path == "/restore":
+                    try:
+                        n = handoff.restore_from_orig(editor.work)
+                        self._json({"ok": True, "n": n})
+                    except FileNotFoundError:
+                        self._json(
+                            {"ok": False, "err": "没有原始备份 segments.orig.json"}
+                        )
                     except Exception as e:  # noqa: BLE001
                         self._json({"ok": False, "err": str(e)})
                 elif self.path == "/burn":
@@ -341,6 +466,7 @@ def _render_page(p: _Editor) -> str:
     page = _PAGE
     for key, val in {
         "@@TITLE@@": p.work.name,
+        "@@STEM@@": p.work.name[: -len(".jpsub")],
         "@@DURF@@": fmt_t(p.duration) if p.video else "(无视频预览)",
         "@@DUR@@": f"{p.duration:.3f}" if p.video else "1",
         "@@W@@": "640" if p.video else "0",
@@ -365,11 +491,12 @@ def editor(target: Path) -> None:
         target = target.parent / (target.stem + ".jpsub")
     if not target.is_dir():
         raise SystemExit(f"错误:工作目录不存在:{target}")
-    if (
-        not (target / "translate-in.txt").exists()
-        and not (target / "translate-out.txt").exists()
-    ):
-        raise SystemExit(f"错误:{target} 里没有 translate-in/out.txt,先运行 extract")
+    if not (target / "segments.json").exists():
+        raise SystemExit(f"错误:{target} 里没有 segments.json,先运行 extract")
+    # 旧目录一次性迁移:translate-out.txt 译文补进 segments(有 out 才生效)
+    from .cache import TranslationCache
+
+    handoff.import_out_to_segments(target, TranslationCache(target / "cache.json"))
     e = _Editor(target)
     url = f"http://127.0.0.1:{e.srv.server_address[1]}/"
     print(f"译文调整器:{url}(浏览器未自动打开时手动访问;关闭页面即退出)")
