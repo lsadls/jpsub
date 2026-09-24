@@ -54,6 +54,11 @@ input.tin{width:60px}
 </div>
 <div style=margin-top:6px><button id=add>＋在当前时间新增字幕</button></div>
 <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start">
+<span class=grp>
+<button id=continue-tr title="翻译标为[[未译]]的句子,已译的跳过">续翻</button>
+<button id=force-tr title="重新翻译全部句子(含已译)">重翻</button>
+<label style=cursor:pointer><input type=checkbox id=hardtr>硬核</label>
+</span>
 <span class=grp><button id=save>保存</button> <button id=render>生成字幕</button></span>
 <span class=grp>
 <button id=b2a>转换</button>
@@ -74,7 +79,8 @@ input.tin{width:60px}
 <table id=list><tr><th>时间</th><th>原文</th><th>译文</th></tr></table>
 </div>
 </div>
-<p>点时间旁的 ▶ 跳到该句开头;时间栏「←起」「止→」把起止设为当前预览时间;键盘 ←/→ ±0.1秒(Shift ±1秒,Alt ±5秒)。</p>
+<p>点时间旁的 ▶ 跳到该句开头;时间栏「←起」「止→」把起止设为当前预览时间,键盘 ←/→ ±0.1秒(Shift ±1秒,Alt ±5秒);「✕」删除该行字幕;「↺」把该句标为未译并清掉缓存旧译文。
+「续翻」只翻译未译句子,「重翻」全部重翻,勾「硬核」则按「。」拆成单句逐句翻(单句翻坏不连累整条);翻完可点「生成字幕」;「转换」把所选 .bcc/.ass 互转,「烧录」把字幕烧进视频;「还原改动」从备份列表选中一份恢复。</p>
 <script>
 const DUR=@@DUR@@,HASVID=@@HASVID@@;
 const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
@@ -99,7 +105,7 @@ function syncList(){
   const ai=cur();
   rows.forEach((r,i)=>{
     const tr=document.createElement('tr');if(i===ai)tr.className='act';
-    if(r.text.trim()==='[[未译]]')tr.className+=' unt';
+    if(r.text.trim()==='[[未译]]'||r.bad)tr.className+=' unt';
     tr.innerHTML=`<td><div class=trow>`+
       `<button class=jump data-i=${i} title=跳到该句开头>▶</button>`+
       `<input class=tin value='${fmt(r.start)}' data-k=start data-i=${i}>`+
@@ -108,6 +114,7 @@ function syncList(){
       `<input class=tin value='${fmt(r.end)}' data-k=end data-i=${i}>`+
       `<button class=st data-i=${i} data-k=end title=设为当前时间>止→</button>`+
       `<button class=del data-i=${i} title=删除该字幕>✕</button>`+
+      `<button class=unt data-i=${i} title=标为未译,配合主页「续翻」重翻该句>↺</button>`+
       `</div></td>`+
       `<td><textarea class=src data-i=${i} style=width:100%;box-sizing:border-box>${esc(r.src)}</textarea></td>`+
       `<td><textarea class=tr data-i=${i} style=width:100%;box-sizing:border-box>${esc(r.text)}</textarea></td>`;
@@ -125,6 +132,12 @@ function syncList(){
   tb.querySelectorAll('textarea.tr').forEach(ta=>ta.onchange=()=>{
     rows[+ta.dataset.i].text=ta.value});
   tb.querySelectorAll('.del').forEach(d=>d.onclick=()=>{rows.splice(+d.dataset.i,1);syncList();});
+  tb.querySelectorAll('button.unt').forEach(b=>b.onclick=async()=>{
+    const i=+b.dataset.i;
+    const j=await post2('/unt',{i:i,rows:rows});
+    if(j.ok){rows[i].text='[[未译]]';syncList();msg.textContent='已标为未译,去主页点「续翻」重翻该句'}
+    else msg.textContent='失败:'+j.err;
+  });
   tb.querySelectorAll('.jump').forEach(n=>n.onclick=()=>setT(rows[+n.dataset.i].start));
 }
 $('add').onclick=()=>{
@@ -151,6 +164,26 @@ async function save(){
   return j.ok;
 }
 $('save').onclick=save;
+async function pollTr(){
+  while(true){
+    const j=await(await fetch('/trstatus')).json();
+    msg.textContent=j.log[j.log.length-1]||'';
+    if(!j.busy){
+      if(j.log.some(l=>l.startsWith('✅')))location.reload();
+      return;
+    }
+    await new Promise(r=>setTimeout(r,1000));
+  }
+}
+async function startTr(force){
+  if(!await save())return;
+  const j=await post2('/translate',{hard:$('hardtr').checked,force:force});
+  if(!j.ok)return msg.textContent='失败:'+j.err;
+  msg.textContent='翻译启动中...';
+  pollTr();
+}
+$('continue-tr').onclick=()=>startTr(false);
+$('force-tr').onclick=()=>startTr(true);
 $('render').onclick=async()=>{
   if(!await save())return;
   msg.textContent='生成字幕中...';
@@ -223,7 +256,8 @@ def _read_rows(work: Path) -> list[dict]:
             "start": s.start,
             "end": s.end,
             "src": s.text or "",
-            "text": s.tr if s.tr and not handoff.is_untranslated(s.tr) else handoff.UNTRANSLATED_MARK,
+            "text": s.tr or "" if s.tr and not handoff.is_untranslated(s.tr) else handoff.UNTRANSLATED_MARK,
+            "bad": bool(s.tr and handoff.is_junk_tr(s.tr)),  # 混入拒绝语:显示原文但标橙,续翻会重翻
         }
         for s in segs
     ]
@@ -259,6 +293,39 @@ def _save_rows(work: Path, rows: list[dict]) -> int:
         comment=handoff.read_meta(work / "segments.json").get("comment"),
     )
     return len(segs)
+
+
+def _tr_worker(editor, argv: list[str]) -> None:
+    """后台翻译线程:跑 cli._translate,输出经共享 LineCapture 收集进 tr_log。"""
+    import contextlib
+
+    from . import cli as _cli
+    from . import progress
+
+    def _on_line(line: str) -> None:
+        log = editor.tr_log
+        if line.startswith("[第 ") and log and log[-1].startswith("[第 "):
+            log[-1] = line  # 翻译进度原地刷新,不刷屏
+        else:
+            log.append(line)
+            if len(log) > 500:
+                del log[:-500]
+
+    editor.tr_busy = True
+    editor.tr_log = []
+    try:
+        with (
+            contextlib.redirect_stdout(progress.LineCapture(_on_line)),
+            contextlib.redirect_stderr(progress.LineCapture(_on_line)),
+        ):
+            _cli._translate(_cli.parse_args(argv))
+        editor.tr_log.append("✅ 已完成")
+    except SystemExit as e:
+        editor.tr_log.append(f"❌ {e}")
+    except Exception as e:  # noqa: BLE001
+        editor.tr_log.append(f"❌ {e}")
+    finally:
+        editor.tr_busy = False
 
 
 def _find_video(work: Path) -> Path | None:
@@ -340,6 +407,8 @@ class _Editor:
         self.video = _find_video(work)
         self.duration = video_duration(self.video) if self.video else 0.0
         self.render_msg = ""
+        self.tr_busy = False  # 翻译任务进行中标记
+        self.tr_log: list[str] = []  # 翻译任务输出(进度)
 
         import time
         self._last = time.time()  # 最近一次页面请求时间(判断页面是否已关闭)
@@ -370,6 +439,8 @@ class _Editor:
                 _touch()
                 if self.path == "/ping":
                     self._json({})
+                elif self.path == "/trstatus":
+                    self._json({"busy": editor.tr_busy, "log": editor.tr_log[-8:]})
                 elif self.path == "/backups":
                     bdir = editor.work / "backup"
                     names = (
@@ -438,6 +509,38 @@ class _Editor:
                         self._json({"ok": True, "n": cnt})
                     except Exception as e:  # noqa: BLE001
                         self._json({"ok": False, "err": str(e)})
+                elif self.path == "/unt":
+                    # 标为未译:该行译文清空写回 segments,并删除缓存里的旧译文,
+                    # 之后主页「续翻」按钮只会重翻这句
+                    try:
+                        b = json.loads(body)
+                        rows = b["rows"]
+                        i = int(b["i"])
+                        rows[i]["text"] = handoff.UNTRANSLATED_MARK
+                        _save_rows(editor.work, rows)
+                        from .cache import TranslationCache
+
+                        cache = TranslationCache(editor.work / "cache.json")
+                        cache.remove(str(rows[i].get("src", "")))
+                        cache.save()
+                        self._json({"ok": True})
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False, "err": str(e)})
+                elif self.path == "/translate":
+                    # 后台线程跑翻译(续翻/重翻),进度经 /trstatus 轮询
+                    if editor.tr_busy:
+                        self._json({"ok": False, "err": "已有翻译任务在进行"})
+                    else:
+                        b = json.loads(body) if body else {}
+                        argv = ["translate", str(editor.work)]
+                        if b.get("hard"):
+                            argv.append("--hard")
+                        if b.get("force"):
+                            argv.append("--force")
+                        threading.Thread(
+                            target=_tr_worker, args=(editor, argv), daemon=True
+                        ).start()
+                        self._json({"ok": True})
                 elif self.path == "/conv":
                     try:
                         src = self._resolve_file(json.loads(body).get("file", ""))

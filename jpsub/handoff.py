@@ -25,6 +25,28 @@ def is_untranslated(text: str) -> bool:
     return not text or text.strip() == UNTRANSLATED_MARK
 
 
+# 模型把拒绝语当译文返回(内容审查提示混进译文,中英文变体)时的特征,视为无效译文
+import re as _re
+
+_JUNK_PAT = _re.compile(
+    r"the request was rejected|high risk|content[_ ]?filter|safety system"
+    r"|无法翻译|无法协助|不能翻译|不能协助|拒绝翻译"
+    r"|提供(其他|不含|别的)(文本|内容)"
+    r"|can('?)t (assist|help|translate)|unable to (assist|help|translate)",
+    _re.I,
+)
+
+
+def is_junk_tr(text: str) -> bool:
+    """判断译文里是否混入了模型拒绝语(如 'The request was rejected...')。"""
+    return bool(text) and bool(_JUNK_PAT.search(text))
+
+
+def is_bad_tr(text: str) -> bool:
+    """无效译文 = 未译占位(或空)或混入拒绝语;一律视为待翻/待修。"""
+    return is_untranslated(text) or is_junk_tr(text)
+
+
 def fmt_secs(v: float) -> str:
     """秒 -> 军方时间 'MMSS'(0.1s 精度,分秒各补足两位,如 58s -> '0058');
     有小时则前面再加 HH,如 3680s -> '010120'。"""
@@ -138,7 +160,7 @@ def pending_texts(segments: list[Segment], cache: TranslationCache) -> list[str]
     for s in segments:
         if not s.text:
             continue
-        if s.tr and not is_untranslated(s.tr):
+        if s.tr and not is_bad_tr(s.tr):
             continue  # 段上已有有效译文
         if s.text not in seen and cache.get(s.text) is None:
             seen.append(s.text)
@@ -147,13 +169,14 @@ def pending_texts(segments: list[Segment], cache: TranslationCache) -> list[str]
 
 def resolve(segments: list[Segment], cache: TranslationCache) -> dict[str, str]:
     """段文本 -> 译文。优先段上快照的 tr(用户在调整器里编辑后最新),
-    其次翻译缓存;缺译文的不返回(渲染时该段不显示,不用原文填补)。"""
+    其次翻译缓存;只跳过空/[[未译]]占位,混入拒绝语的译文照常渲染
+    (是否重翻是翻译侧的事,渲染侧不负责丢弃)。"""
     out: dict[str, str] = {}
     for s in segments:
         if not s.text:
             continue
         for cand in (s.tr, cache.get(s.text)):
-            if cand and not is_untranslated(cand):
+            if not is_untranslated(cand or ""):
                 out[s.text] = cand
                 break
     return out

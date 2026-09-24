@@ -17,9 +17,28 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from . import cli, handoff
+from . import cli, handoff, progress
 
 VID_EXTS = (".mp4", ".mkv", ".webm")
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """终止进程及其全部子孙(下载任务会派生 yt-dlp/ffmpeg,只杀父进程会残留)。"""
+    import os
+    import signal
+
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+            )
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    proc.wait(timeout=10)
+
 
 # 任务标识用:子命令 → 操作名(任务显示为「视频名 操作」)
 _OP = {
@@ -73,6 +92,7 @@ button{white-space:nowrap}
 </div>
 <div class=btns>
 <button onclick=cmd('download',[])>下载并翻译</button>
+<button onclick=cmd('download',['--download-only'])>仅下载</button>
 <button onclick=cmd('download',['--notrans'])>下载不翻译</button>
 <button onclick=cmd('download',['--burn'])>下载+烧录</button>
 </div>
@@ -98,6 +118,11 @@ button{white-space:nowrap}
 <button onclick=cmd('translate',['--force'])>重翻</button>
 <button onclick=delWork()>删除工作目录</button>
 </div>
+<div class=row>
+<span class=lbl>自定义命令</span>
+<input id=ccmd type=text style="flex:1" placeholder="完整命令,如 download sm123 -v 720p -a best --download-only">
+<button onclick=runCmd()>运行</button>
+</div>
 </div>
 <div class=pane>
 <h3>② output/ 视频与工作目录（点击行选中） <button onclick=openDir()>打开文件夹</button></h3>
@@ -122,6 +147,7 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <div style="color:#888;font-size:13px;line-height:2">
 <b style=color:#aaa>① 下载组</b><br>
 <b>下载并翻译</b> — 完整流水线:下载→抽帧→OCR→翻译→生成ASS<br>
+<b>仅下载</b> — --download-only,只下载视频到 output/,不抽帧不 OCR<br>
 <b>下载不翻译</b> — --notrans,停在译文待编辑<br>
 <b>下载+烧录</b> — --burn,字幕直接烧进视频<br>
 <b style=color:#aaa>① 本地视频组</b><br>
@@ -141,6 +167,7 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b style=color:#aaa>其他</b><br>
 <b>② 打开文件夹</b> — 用系统文件管理器打开 output 目录<br>
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>
+<b>① 自定义命令</b> — 输入完整 jpsub 命令(子命令+参数,如 download sm123 -v 720p),点运行即在后台执行,输出显示在任务里<br>
 <b>④ 终止选中</b> — 结束选中的任务;自定义参数框的内容会追加到所有命令后<br>
 force 操作与覆盖旧文件前都会自动备份到工作目录 backup/时间戳/ 文件夹
 </div>
@@ -170,6 +197,12 @@ async function runScript(){
   if(!t.trim())return alert('脚本为空');
   const j=await post('/script',{text:t});
   if(!j.ok)alert('失败:'+j.err);else refreshJobs();
+}
+async function runCmd(){
+  const t=$('ccmd').value.trim();
+  if(!t)return alert('请输入命令,如 download sm123 -v 720p');
+  const j=await post('/runcmd',{text:t});
+  if(!j.ok)alert('失败:'+j.err);else{$('ccmd').value='';refresh();refreshJobs()}
 }
 let localPath='';
 function pickDone(p){localPath=p;$('locline').textContent=p}
@@ -300,7 +333,6 @@ class _Home:
     def __init__(self, root: Path):
         import contextlib
         import queue
-        import re
 
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -308,13 +340,15 @@ class _Home:
         self.jobs: list[dict] = []  # {proc|inline, desc, st, line}
         home = self
 
-        def _sanitize(line: str) -> str:
-            """去 ANSI 颜色码和进度条图形,只留名称+百分比+数字。"""
-            line = re.sub(r"\x1b\[[0-9;]*m", "", line)
-            m = re.match(r"^(.*?):\s*(\d+)%\|[^|]*\|\s*([^[\s]+)", line)
-            if m:
-                return f"{m.group(1).strip()} {m.group(2)}% ({m.group(3)})"
-            return line
+        def _on_line(j: dict, line: str) -> None:
+            j["line"] = line
+            if j.get("show"):
+                lines = j.setdefault("lines", [])
+                if line.startswith("[第 ") and lines and lines[-1].startswith("[第 "):
+                    lines[-1] = line  # 翻译进度原地刷新,不刷屏
+                else:
+                    lines.append(line)
+                    del lines[:-200]
 
         # ---- 进程内任务队列:OCR 模型只加载一次,任务串行复用 ----
         self._engine = None
@@ -325,41 +359,6 @@ class _Home:
 
                 home._engine = PaddleOcrEngine()
             return home._engine
-
-        def _cap_write(j: dict, buf: list, s: str) -> None:
-            buf[0] += s
-            parts = re.split(r"[\r\n]", buf[0])
-            buf[0] = parts[-1]
-            for p in parts[:-1]:
-                line = _sanitize(p.strip())
-                if line:
-                    j["line"] = line
-                    if j.get("show"):
-                        lines = j.setdefault("lines", [])
-                        lines.append(line)
-                        del lines[:-200]
-
-        class _Cap:
-            """线程安全的 stdout 替身:print 进度转成 j['line'](仅内联任务运行期间生效)。"""
-
-            def __init__(self, j: dict):
-                self.j = j
-                self.buf = [""]
-                self._real = sys.stdout
-
-            def write(self, s: str) -> int:
-                if self._real is not None:
-                    try:
-                        self._real.write(s)  # 同时落到服务器终端,便于排查
-                    except Exception:  # noqa: BLE001
-                        pass
-                if self.j.get("cancel"):
-                    raise RuntimeError("已被用户终止")
-                _cap_write(self.j, self.buf, s)
-                return len(s)
-
-            def flush(self):
-                pass
 
         def _worker():
             while True:
@@ -374,8 +373,19 @@ class _Home:
                     if home._engine is None:
                         j["line"] = "加载 OCR 模型中…"
                     with (
-                        contextlib.redirect_stdout(_Cap(j)),
-                        contextlib.redirect_stderr(_Cap(j)),  # tqdm 走 stderr
+                        contextlib.redirect_stdout(
+                            progress.LineCapture(
+                                lambda ln, j=j: _on_line(j, ln),
+                                echo=sys.stdout,
+                                guard=lambda: not j.get("cancel"),
+                            )
+                        ),
+                        contextlib.redirect_stderr(
+                            progress.LineCapture(
+                                lambda ln, j=j: _on_line(j, ln),
+                                guard=lambda: not j.get("cancel"),
+                            )
+                        ),  # tqdm 走 stderr
                     ):
                         cli.run(args, engine=home)  # home 自己充当引擎代理
                     j["st"] = "done"
@@ -461,6 +471,12 @@ class _Home:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                start_new_session=(
+                    sys.platform != "win32"
+                ),  # 独立进程组,终止时连子孙一起杀
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                if sys.platform == "win32"
+                else 0,
             )
             if kind == "launch":
                 j = {
@@ -611,7 +627,7 @@ class _Home:
                         if j["proc"].poll() is not None:
                             self._json({"ok": False, "err": "该任务已结束"})
                             return
-                        j["proc"].terminate()
+                        _kill_tree(j["proc"])  # 连 yt-dlp 等子孙进程一起终止
                         self._json({"ok": True})
                     elif self.path == "/script":
                         text = str(body.get("text", ""))
@@ -625,6 +641,26 @@ class _Home:
                             [*exe, "-s", str(path)],
                             label="批量脚本",
                             show=True,
+                        )
+                        self._json({"ok": True})
+                    elif self.path == "/runcmd":
+                        # 一次性自定义命令:整条命令 = jpsub 子命令 + 参数
+                        import shlex as _shlex
+
+                        text = str(body.get("text", "")).strip()
+                        try:
+                            toks = _shlex.split(text)
+                        except ValueError as e:
+                            self._json({"ok": False, "err": f"命令解析失败:{e}"})
+                            return
+                        if not toks:
+                            self._json({"ok": False, "err": "命令为空"})
+                            return
+                        home.spawn(
+                            " ".join(toks[:2]),
+                            [*exe, *toks],
+                            label=" ".join(toks[:2]),
+                            show=True,  # 输出保留到任务输出区
                         )
                         self._json({"ok": True})
                     elif self.path == "/cmd":

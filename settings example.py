@@ -36,12 +36,12 @@ MAX_RUN = 10
 SIMILARITY = 0.85
 
 # 翻译:每次请求翻译的句数
-BATCH_SIZE = 30
+BATCH_SIZE = 10
 
 # ASS 字幕样式(位置交给播放器默认处理)
 FONT = "Noto Sans CJK SC"  # 字体
 FONT_SIZE = 20  # 字号
-MAX_CHARS = 30  # 每行最大字数(超出折行)
+MAX_CHARS = 20  # 每行最大字数(超出折行)
 OUTLINE_COLOR = (255, 165, 0)  # 描边颜色(RGB,当前为橙色)
 OUTLINE_WIDTH = 1  # 描边宽度
 SHADOW = 0  # 阴影宽度

@@ -15,10 +15,19 @@ class TranslationCache:
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
     def get(self, src: str) -> str | None:
-        return self._data.get(src)
+        v = self._data.get(src)
+        if v is None:
+            return None
+        from .handoff import is_bad_tr
+
+        return None if is_bad_tr(v) else v  # 混入拒绝语的旧缓存视为没有
 
     def put(self, src: str, dst: str) -> None:
         self._data[src] = dst
+
+    def remove(self, src: str) -> None:
+        """删除缓存条目(重翻指定句子时使用,使该句重新请求 AI)。"""
+        self._data.pop(src, None)
 
     def __len__(self) -> int:
         return len(self._data)

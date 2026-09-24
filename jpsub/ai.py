@@ -10,9 +10,6 @@ import os
 import re
 import time
 import urllib.request
-from contextlib import nullcontext
-
-from tqdm import tqdm
 
 from . import settings
 
@@ -20,8 +17,7 @@ from . import settings
 SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句翻译为简体中文。
 
 背景:视频是日本例区文化(如淫梦文化)的二次创作(如 BB 剧场),注意例区用语、
-网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。人名和专有名词周围加空格
-(迫真)(大嘘)这种在句子末尾的梗保持为原汉字不翻译
+网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。人名和专有名词周围加空格,输出里连续的省略号不能超过两个, 对错位/缺失的符号自动修正/补全
 
 规则:
 - 忠实原意,语气自然简洁,不添油加醋、不省略信息;
@@ -78,7 +74,13 @@ def _is_censored_error(err: Exception) -> bool:
 
 
 def _chat(
-    messages: list[dict], cfg: dict, *, temperature: float = 0.3, retries: int = 3
+    messages: list[dict],
+    cfg: dict,
+    *,
+    temperature: float = 0.3,
+    retries: int = 3,
+    quiet: bool = False,
+    timeout: int = 8,
 ) -> str:
     """调用 OpenAI 兼容 /chat/completions 端点,带简单重试。
 
@@ -108,10 +110,11 @@ def _chat(
     err: Exception | None = None
     for attempt in range(retries):
         try:
-            with opener.open(req, timeout=300) as resp:
+            with opener.open(req, timeout=timeout) as resp:
                 data = json.loads(resp.read())
             try:
-                return data["choices"][0]["message"]["content"]
+                content = data["choices"][0]["message"]["content"]
+                return content
             except (KeyError, IndexError, TypeError):
                 raise ValueError(f"API 响应格式异常:{data}") from None
         except urllib.error.HTTPError as e:  # 读取响应体里的具体错误信息
@@ -123,6 +126,10 @@ def _chat(
                 raise CensoredError(str(e)) from None
             err = e
             if attempt < retries - 1:
+                if not quiet:
+                    print(
+                        f"  请求失败:{e}\n  {2 * (attempt + 1)}s 后重试...", flush=True
+                    )
                 time.sleep(2 * (attempt + 1))
         except Exception as e:  # 网络抖动/限流/响应异常,退避重试
             if _is_quota_error(e):  # 额度/余额耗尽,重试无意义
@@ -131,6 +138,10 @@ def _chat(
                 raise CensoredError(str(e)) from None
             err = e
             if attempt < retries - 1:
+                if not quiet:
+                    print(
+                        f"  请求失败:{e}\n  {2 * (attempt + 1)}s 后重试...", flush=True
+                    )
                 time.sleep(2 * (attempt + 1))
     raise RuntimeError(f"API 调用失败(已重试 {retries} 次):{err}")
 
@@ -171,6 +182,7 @@ def translate_texts(
     progress=None,
     quiet: bool = False,
     on_batch=None,
+    timeout: int = 8,
 ) -> dict[str, str]:
     """分批翻译句子列表,返回 {键: 译文};未返回译文的键记 UNTRANSLATED_MARK。
 
@@ -196,72 +208,103 @@ def translate_texts(
         )
     messages: list[dict] = [{"role": "system", "content": system}]
     results: dict[str, str] = {}
-    # 按文本长度动态收缩批大小:每批字符总量不超过 BATCH_CHAR_TARGET,
-    # 长句(如博客体字幕)自动减少每批句数,避免单批过长导致漏行/截断
+    # 长句自动收缩批大小:平均超 100 字每批 1 句,超 50 字每批 2 句,防止长句博客体单批过长漏行
     if items:
         avg_len = sum(len(t) for _, t in items) / len(items)
-        if avg_len > 0:
-            by_chars = max(1, round(settings.BATCH_CHAR_TARGET / avg_len))
-            if by_chars < batch_size:
-                if not quiet:
-                    print(
-                        f"句子平均 {avg_len:.0f} 字,批大小 {batch_size} -> {by_chars}"
-                    )
-                batch_size = min(batch_size, by_chars)
-    with (
-        tqdm(total=len(items), unit="句", desc="翻译中") if not quiet else nullcontext()
-    ) as bar:
-        for off in range(0, len(items), batch_size):
-            batch = items[off : off + batch_size]
-            messages.append({"role": "user", "content": "\n".join(t for _, t in batch)})
-            try:
-                reply = _chat(messages, cfg)
-                got = _parse_reply_lines(reply, len(batch))
-                missing = [j for j, zh in enumerate(got) if not zh]
-                if missing:  # 缺行:在同一对话里补问一轮(只发缺的原文,按行序)
-                    messages.append({"role": "assistant", "content": reply})
-                    fix_src = [batch[j][1] for j in missing]
-                    fix_user = (
-                        "以下句子没有返回译文,请逐行输出它们的中文译文,"
-                        "行序与给出顺序一致,不要编号:\n" + "\n".join(fix_src)
-                    )
-                    messages.append({"role": "user", "content": fix_user})
-                    reply2 = _chat(messages, cfg)
-                    messages.append({"role": "assistant", "content": reply2})
-                    got2 = _parse_reply_lines(reply2, len(missing))
-                    for j, zh in zip(missing, got2):
-                        if zh:
-                            got[j] = zh
-                else:
-                    messages.append({"role": "assistant", "content": reply})
-            except RuntimeError as e:
-                if "额度不足" in str(e):  # 剩余 token 耗尽:终止并提醒
-                    raise
-                if isinstance(e, CensoredError) and batch_size > 1:
-                    # 单句敏感连累整批:停止本轮,由上层改用 batch_size=1 重跑
-                    raise CensoredError(
-                        f"本批({batch[0][0]}~{batch[-1][0]})触发内容审查:{e}"
-                    ) from None
-                # 其他单批失败不中断整体,回退原文并继续
-                print(f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}")
-                messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
-                got = [""] * len(batch)
-            except Exception as e:  # 单批失败不中断整体,回退原文并继续
-                print(f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}")
-                messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
-                got = [""] * len(batch)
-            for (i, _src), zh in zip(batch, got):
-                if not zh:  # 缺行兜底:记为未译占位标记(多为内容审查拦截),便于人工定位
-                    if not quiet:
-                        print(f"警告:{i} 未返回译文,已标记 {UNTRANSLATED_MARK}")
-                    zh = UNTRANSLATED_MARK
-                results[i] = zh
-            if on_batch:  # 每批回传部分结果,调用方可在中断时保留已完成部分
-                on_batch({i: zh for (i, _), zh in zip(batch, got)})
+        orig_bs = batch_size
+        if avg_len > 100:
+            batch_size = 1
+        elif avg_len > 50:
+            batch_size = 2
+        if batch_size < orig_bs and not quiet:
+            print(f"句子平均 {avg_len:.0f} 字,批大小 {orig_bs} -> {batch_size}")
+    t0 = time.monotonic()  # 性能指标起点(整体耗时/剩余/每句用时)
+    done = 0
+    for off in range(0, len(items), batch_size):
+        batch = items[off : off + batch_size]
+        nb = off // batch_size + 1
+        total_batches = (len(items) + batch_size - 1) // batch_size
+        nchars = sum(len(t) for _, t in batch)
+        if not quiet:
+            print(
+                f"\r[第 {nb}/{total_batches} 批] 发送 {len(batch)} 句({nchars} 字)",
+                end="",
+                flush=True,
+            )
+        messages.append({"role": "user", "content": "\n".join(t for _, t in batch)})
+        try:
+            reply = _chat(messages, cfg, quiet=quiet, timeout=timeout)
+            got = _parse_reply_lines(reply, len(batch))
+            from .handoff import is_junk_tr
+
+            # 空行或模型把拒绝语当译文,都算缺行,先在同一对话里补问重试
+            missing = [j for j, zh in enumerate(got) if not zh or is_junk_tr(zh)]
+            if missing:  # 缺行:在同一对话里补问一轮(只发缺的原文,按行序)
+                messages.append({"role": "assistant", "content": reply})
+                fix_src = [batch[j][1] for j in missing]
+                fix_user = (
+                    "以下句子没有返回译文,请逐行输出它们的中文译文,"
+                    "行序与给出顺序一致,不要编号:\n" + "\n".join(fix_src)
+                )
+                messages.append({"role": "user", "content": fix_user})
+                reply2 = _chat(messages, cfg, quiet=quiet, timeout=timeout)
+                messages.append({"role": "assistant", "content": reply2})
+                got2 = _parse_reply_lines(reply2, len(missing))
+                for j, zh in zip(missing, got2):
+                    if zh:
+                        got[j] = zh
+            else:
+                messages.append({"role": "assistant", "content": reply})
+        except RuntimeError as e:
+            if "额度不足" in str(e):  # 剩余 token 耗尽:终止并提醒
+                raise
+            if isinstance(e, CensoredError) and batch_size > 1:
+                # 单句敏感连累整批:停止本轮,由上层改用 batch_size=1 重跑
+                raise CensoredError(
+                    f"本批({batch[0][0]}~{batch[-1][0]})触发内容审查:{e}"
+                ) from None
+            # 其他单批失败不中断整体,回退原文并继续
             if not quiet:
-                bar.update(len(batch))
-            if progress:
-                progress(min(off + len(batch), len(items)), len(items))
+                print(
+                    f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}",
+                    flush=True,
+                )
+            messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
+            got = [""] * len(batch)
+        except Exception as e:  # 单批失败不中断整体,回退原文并继续
+            if not quiet:
+                print(
+                    f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}",
+                    flush=True,
+                )
+            messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
+            got = [""] * len(batch)
+        for (i, _src), zh in zip(batch, got):
+            from .handoff import is_junk_tr
+
+            if not zh or is_junk_tr(zh):  # 空行或模型把拒绝语当译文:记为未译占位
+                if not quiet:
+                    print(f"警告:{i} 未返回有效译文,已标记 {UNTRANSLATED_MARK}")
+                zh = UNTRANSLATED_MARK
+            results[i] = zh
+        if on_batch:  # 每批回传部分结果,调用方可在中断时保留已完成部分
+            on_batch({i: zh for (i, _), zh in zip(batch, got)})
+        if not quiet:  # 性能指标与批进度同行,原地刷新不刷屏
+            done += len(batch)
+            el = time.monotonic() - t0
+            per = el / done if done else 0.0
+            rem = per * (len(items) - done)
+            print(
+                f"\r[第 {nb}/{total_batches} 批] 发送 {len(batch)} 句({nchars} 字) "
+                f"[{int(el // 60):02d}:{el % 60:04.1f}"
+                f"<{int(rem // 60):02d}:{rem % 60:04.1f}, {per:.2f}s/句]  ",
+                end="",
+                flush=True,
+            )
+        if progress:
+            progress(min(off + len(batch), len(items)), len(items))
+    if not quiet:
+        print()  # 结束后换行,让后续输出另起一行
     return results
 
 

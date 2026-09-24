@@ -114,6 +114,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="只到 OCR 产出 segments.json 为止,不自动翻译不渲染",
         )
         a.add_argument(
+            "--download-only",
+            action="store_true",
+            help="(仅 download)只下载视频,不抽帧不 OCR",
+        )
+        a.add_argument(
             "--force",
             action="store_true",
             help="强制重新抽帧 OCR(默认已有 segments.json 时跳过,读缓存)",
@@ -193,9 +198,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="重新翻译全部句子(默认已译的跳过,读缓存)",
     )
     t.add_argument(
+        "--hard",
+        action="store_true",
+        help="把每条原文按「。」拆成单句逐句翻译后拼回,单句有问题不连累整条",
+    )
+    t.add_argument(
         "--cache", type=Path, default=None, help="默认 <工作目录>/cache.json"
     )
     add_api(t)
+
+    x = sub.add_parser("text", help="翻译任意文本文件(逐行发给 AI,保留空行)")
+    x.add_argument("file", type=Path, help="要翻译的文本文件(UTF-8)")
+    x.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="输出文件(默认 <原文件名>.zh.txt)",
+    )
+    x.add_argument(
+        "--comment",
+        help="内容背景描述,引导 AI 翻译时参考",
+    )
+    x.add_argument(
+        "--hard",
+        action="store_true",
+        help="把每行按「。」拆成单句逐句翻译后拼回,单句有问题不连累整行",
+    )
+    add_api(x)
 
     m = sub.add_parser("mask", help="打码选取器:鼠标框选区域,生成 masks.json")
     m.add_argument("video", type=Path)
@@ -256,6 +286,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="把浏览器 cookies 传给 yt-dlp(如 chrome/firefox/edge),应对登录或地区限制",
     )
     d.add_argument("--burn", action="store_true", help="把 ASS 烧录进视频(默认不烧录)")
+    d.add_argument(
+        "-v",
+        "--video-quality",
+        default=None,
+        help="视频画质:lowest/best/360p/480p/720p(默认取 settings.NICO_VIDEO_QUALITY)",
+    )
+    d.add_argument(
+        "-a",
+        "--audio-quality",
+        default=None,
+        choices=("lowest", "best"),
+        help="音质:lowest/best(默认取 settings.NICO_AUDIO_QUALITY)",
+    )
     d.add_argument(
         "--comment",
         help="视频描述(如 剧场类型/背景设定),引导 AI 翻译时参考",
@@ -681,6 +724,76 @@ def _load_glossary(work: Path, args) -> dict[str, str]:
     return gloss
 
 
+def _hard_translate(
+    items: list[tuple[str, str]],
+    cfg: dict,
+    *,
+    comment: str | None = None,
+    glossary: dict[str, str] | None = None,
+    quiet: bool = False,
+    cache: TranslationCache | None = None,
+    on_item=None,
+) -> dict[str, str]:
+    """--hard 模式:每条原文按「。」拆成单句,逐句单独翻译后按原序拼回。
+
+    单句失败只丢那一句(以[[原文]]占位),不会毁掉整条;拆出的重复句子只翻一次。
+    cache 传入时单句译文进缓存(跳过已缓存句);on_item(key, 合并译文) 在每条
+    原文的全部句子翻完后回调,供调用方实时写回。
+    """
+    split_of: list[list[str]] = []
+    sents: list[str] = []
+    seen: set[str] = set()
+    for _k, t in items:
+        parts = [p for p in re.split(r"(?<=。)", t) if p.strip()]
+        split_of.append(parts)
+        for p in parts:
+            if p not in seen:
+                seen.add(p)
+                sents.append(p)
+    # 单句先查缓存,命中直接用,只把没缓存的发给 AI
+    got: dict[str, str] = {}
+    todo: list[tuple[str, str]] = []
+    for s in sents:
+        v = cache.get(s) if cache else None
+        if v and not handoff.is_untranslated(v):
+            got[s] = v
+        else:
+            todo.append((s, s))
+    if not quiet:
+        n_cached = len(sents) - len(todo)
+        msg = f"--hard 模式:{len(items)} 条原文拆成 {len(sents)} 个单句(去重后),逐句翻译"
+        if n_cached:
+            msg += f"(缓存命中 {n_cached} 句)"
+        print(msg)
+
+    def _on_batch(d: dict) -> None:
+        for k, v in d.items():
+            got[k] = v
+            if cache is not None and v and not handoff.is_bad_tr(v):
+                cache.put(k, v)  # 单句译文也进缓存,下次 --hard 直用
+
+    if todo:
+        ai.translate_texts(
+            todo,
+            cfg,
+            batch_size=1,
+            comment=comment,
+            glossary=glossary,
+            quiet=quiet,
+            on_batch=_on_batch,
+        )
+    out: dict[str, str] = {}
+    for (k, _t), parts in zip(items, split_of):
+        buf = []
+        for p in parts:
+            tr = got.get(p, "")
+            buf.append(tr if tr and not handoff.is_bad_tr(tr) else f"[[{p}]]")
+        out[k] = "".join(buf)
+        if on_item:
+            on_item(k, out[k])
+    return out
+
+
 def _translate(args) -> Path:
     """翻译工作目录里的 segments.json:待翻句子发给 AI,译文写回段的 tr 并落盘。"""
     quiet = getattr(args, "batch", False)
@@ -745,6 +858,36 @@ def _translate(args) -> Path:
             on_batch=acc.update,
         )
 
+    if getattr(args, "hard", False):
+        # --hard:整条按「。」拆句逐句翻译,单句问题不连累整条;
+        # 每翻完一条就把合并译文写回 segments 并落盘,中断不丢已完成部分
+        def _on_item(k: str, merged: str) -> None:
+            # 含 [[原文]] 占位(该条有失败句)也写回 segments,替换掉旧的脏译文;
+            # 只是整条不进缓存,下次续翻只重翻失败的单句
+            for s in segs:
+                if s.text == k:
+                    s.tr = merged
+            if "[[" not in merged:
+                cache.put(k, merged)
+            cache.save()
+            handoff.write_segments(
+                segs, seg_file, comment=_load_meta(work).get("comment")
+            )
+
+        try:
+            _hard_translate(
+                items, cfg,
+                comment=comment, glossary=glossary or None,
+                quiet=quiet, cache=cache, on_item=_on_item,
+            )
+        except RuntimeError as e:
+            if "额度不足" in str(e):
+                _persist()  # 已翻译部分先落盘,充值后可续翻
+                raise SystemExit(f"\n提醒:{e}(已翻译部分已写回 segments,可充值后续翻)") from None
+            raise
+        _persist()
+        return seg_file
+
     try:
         _run(args.batch_size, items)
     except ai.CensoredError as e:
@@ -762,6 +905,58 @@ def _translate(args) -> Path:
         raise
     _persist()
     return seg_file
+
+
+def _translate_text(args) -> Path:
+    """翻译任意文本文件:逐行发给 AI,译文按行写回输出文件(空行原样保留)。"""
+    src: Path = args.file
+    if not src.exists():
+        raise SystemExit(f"错误:找不到文件 {src}")
+    out: Path = args.output or src.with_name(src.stem + ".zh.txt")
+    lines = src.read_text(encoding="utf-8").splitlines()
+    texts = [ln for ln in lines if ln.strip()]
+    if not texts:
+        raise SystemExit(f"错误:{src} 没有可翻译的内容")
+    cfg = ai.resolve_config(args)
+    glossary = _load_glossary(Path.cwd(), args)
+    if glossary:
+        print(f"名词对照表:{len(glossary)} 条")
+    items = [(t, t) for t in texts]
+
+    def _run(bs: int, todo: list[tuple[str, str]]):
+        return ai.translate_texts(
+            todo,
+            cfg,
+            batch_size=bs,
+            comment=args.comment,
+            glossary=glossary or None,
+        )
+
+    if getattr(args, "hard", False):
+        # --hard:整行按「。」拆句逐句翻译,单句问题不连累整行(失败句回退原文)
+        got = _hard_translate(
+            items, cfg, comment=args.comment, glossary=glossary or None
+        )
+    else:
+        got = None
+
+    try:
+        if got is None:
+            got = _run(args.batch_size, items)
+    except ai.CensoredError as e:
+        print(f"\n内容审查拦截:{e}\n改用 batch_size=1 逐句重跑...")
+        got.update(_run(1, items))
+    out_lines = []
+    for ln in lines:
+        if not ln.strip():
+            out_lines.append(ln)
+            continue
+        tr = got.get(ln, "")
+        out_lines.append(tr if tr and not handoff.is_untranslated(tr) else ln)
+    out.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    n = sum(1 for ln in out_lines if ln and ln not in set(texts))
+    print(f"完成:输出 {out}({n}/{len(texts)} 句已译)")
+    return out
 
 
 def _has_pending(work: Path) -> bool:
@@ -844,6 +1039,10 @@ def _download(args) -> Path:
 
     if args.cookies_from_browser:  # 命令行优先于 settings.py
         dl.settings.COOKIES_FROM_BROWSER = args.cookies_from_browser
+    if args.video_quality:  # -v/-a 命令行优先于 settings.py
+        dl.settings.NICO_VIDEO_QUALITY = args.video_quality
+    if args.audio_quality:
+        dl.settings.NICO_AUDIO_QUALITY = args.audio_quality
     args.output = args.output or _output_root()
     video = download(args.url, args.output, comment=args.comment)
     args.video = video
@@ -852,6 +1051,9 @@ def _download(args) -> Path:
     ass = _find_ass(work)
     if getattr(args, "burn", False) and ass.exists():
         return _burn(video, ass)
+    if getattr(args, "download_only", False):  # 仅下载:拿到视频即停
+        print(f"仅下载模式,不抽帧不 OCR:{video}")
+        return video
     # 完整流水线:extract -> translate -> render(ASS 存工作目录内,以视频名命名)
     if not hasattr(args, "work"):  # download 子命令没有 --work 参数
         args.work = None  # 让 _extract 用默认 <视频>.jpsub
@@ -912,6 +1114,8 @@ def run(
         return _render(args)
     if args.command == "translate":
         return _translate(args)
+    if args.command == "text":
+        return _translate_text(args)
     if args.command == "status":
         _status(args)
         return None

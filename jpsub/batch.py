@@ -36,6 +36,10 @@ def _parse_line(line: str):
     from .download import extract_video_id
 
     tokens = shlex.split(line)
+    for i, t in enumerate(tokens):  # 行内 # 注释:连同其后内容一并丢弃
+        if t.startswith("#"):
+            tokens = tokens[:i]
+            break
     if tokens and not tokens[0].startswith("-") and extract_video_id(tokens[0]):
         tokens = ["download", *tokens]
     return parse_args(tokens)
@@ -96,6 +100,10 @@ def _prepare(line: str, q=None):
 
         ns.video = video
         work = Path(getattr(ns, "work", None) or _default_work(video))
+
+        # --download-only:只下载,不抽帧不 OCR(与 cli._download 行为一致)
+        if cmd == "download" and getattr(ns, "download_only", False):
+            return line, ns, str(video), None, 0, None
 
         # --burn 且已有 ASS:跳过整条流水线直接烧录(与 cli.run 一致),在进程池并行
         if getattr(ns, "burn", False):

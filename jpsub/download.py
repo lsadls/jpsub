@@ -37,8 +37,15 @@ def _proxy_args() -> list[str]:
 
 
 def _ffmpeg_args() -> list[str]:
-    """告诉 yt-dlp ffmpeg 位置(Windows 上可能不在 PATH,放程序目录/bin 下)。"""
-    return ["--ffmpeg-location", settings.binary("ffmpeg")]
+    """告诉 yt-dlp ffmpeg 位置(Windows 上可能不在 PATH,放程序目录/bin 下)。
+
+    注意:yt-dlp 把该值当文件路径,传裸名 ffmpeg(走 PATH)会导致合并被静默跳过,
+    因此只在解析出真实存在的二进制文件时才传,并把名字解析为绝对路径。
+    """
+    bin_path = Path(settings.binary("ffmpeg"))
+    if not bin_path.is_file():
+        return []
+    return ["--ffmpeg-location", str(bin_path.resolve())]
 
 
 def _cookies_args() -> list[str]:
