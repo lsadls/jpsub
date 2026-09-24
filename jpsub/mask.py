@@ -267,6 +267,7 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 .num{cursor:pointer;color:#8cf;text-decoration:underline}
 #msg{color:#fc6;min-height:1.2em;clear:both}
 .hint{color:#888;margin-top:6px}
+.grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
 </style>
 <h3>打码选取 - @@TITLE@@</h3>
 <div id=main>
@@ -283,9 +284,13 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 <button id=pickimg>选图片…</button><span id=selimg style=color:#888></span>
 <input id=imgfile type=file accept="image/*" style=display:none>
 </div>
-<div style=margin-top:6px>
-<button id=save>保存</button> <button id=apply>应用打码</button>
-<span class=hint style=margin-left:8px>列表序号可点击跳转;拖框新增,框内左键移动/右键调大小</span>
+<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start">
+<span class=grp><button id=save>保存</button> <button id=apply>应用打码</button></span>
+<span class=hint style=align-self:center>列表序号可点击跳转;拖框新增,框内左键移动/右键调大小</span>
+</div>
+<div class=grp style="flex-direction:column;align-items:stretch;width:300px;margin-top:6px">
+<span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
+<select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到打开时状态"></select>
 </div>
 <div class=hint style=margin-top:4px>新条目默认 当前帧 ~ 当前帧+5秒;时间可改(支持 mm:ss.s 或秒数)。<br>
 键盘:←/→ ±0.1秒(Shift ±1秒,Alt ±5秒),PageUp/PageDown ±10秒,Home/End 跳到首尾。</div>
@@ -424,9 +429,29 @@ $('imgfile').onchange=async()=>{const f=$('imgfile').files[0];if(!f)return;
 async function save(){
   const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(masks)});
-  msg.textContent=(await r.json()).ok?'已保存':'保存失败';
+  const j=await r.json();
+  msg.textContent=j.ok?'已保存':'保存失败';
+  if(j.ok)loadBks();
 }
 $('save').onclick=save;
+async function loadBks(){
+  const j=await(await fetch('/backups')).json();
+  const s=$('bksel');s.innerHTML='';
+  (j.names||[]).forEach(n=>{
+    const o=document.createElement('option');o.value=n;o.textContent=n;s.appendChild(o);});
+}
+loadBks();
+$('restore').onclick=async()=>{
+  const bk=$('bksel').value;
+  if(!confirm(bk?'确定还原到备份 '+bk+'?未保存的改动会丢失':'确定还原到打开选取器时的状态?'))return;
+  const j=await post2('/restore',{name:bk||''});
+  if(j.ok)location.reload();
+  else msg.textContent='失败:'+j.err;
+};
+function post2(path,body){
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)}).then(r=>r.json());
+}
 $('apply').onclick=async()=>{
   await save();
   if((await(await fetch('/exists')).json()).exists&&!confirm('输出文件(.masked.mp4)已存在,覆盖?'))return;
@@ -471,6 +496,8 @@ class _Picker:
 
         self.video = video
         self.masks_path = masks_path
+        # 打开时的初始快照:还原改动(不选备份)时用
+        self._initial = masks_path.read_bytes() if masks_path.is_file() else b""
         self.vw, self.vh = video_size(video)
         self.duration = video_duration(video)
         self.apply_msg = "空闲"
@@ -581,8 +608,56 @@ class _Picker:
                         )
                         for m in items
                     ]
+                    from .cli import _backup
+
+                    _backup(picker.masks_path.parent, picker.masks_path)
                     save_masks(entries, picker.masks_path)
                     self._json({"ok": True})
+                elif self.path == "/backups":
+                    bdir = picker.masks_path.parent / "backup"
+                    names = (
+                        sorted(
+                            (
+                                p.name
+                                for p in bdir.iterdir()
+                                if p.is_dir() and (p / "masks.json").is_file()
+                            ),
+                            reverse=True,
+                        )
+                        if bdir.is_dir()
+                        else []
+                    )
+                    self._json({"ok": True, "names": names})
+                elif self.path == "/restore":
+                    try:
+                        name = ""
+                        try:
+                            name = str(json.loads(body).get("name", "") or "").strip()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if name:
+                            src = (
+                                picker.masks_path.parent
+                                / "backup"
+                                / name
+                                / "masks.json"
+                            )
+                            if not src.is_file():
+                                raise FileNotFoundError(f"找不到备份:{src}")
+                            from .cli import _backup
+
+                            _backup(  # 还原前备份当前状态
+                                picker.masks_path.parent, picker.masks_path
+                            )
+                            picker.masks_path.write_bytes(src.read_bytes())
+                        else:  # 不选备份:还原到打开选取器时的状态
+                            if picker._initial:
+                                picker.masks_path.write_bytes(picker._initial)
+                            elif picker.masks_path.exists():
+                                picker.masks_path.unlink()
+                        self._json({"ok": True})
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False, "err": str(e)})
                 elif self.path == "/upload":
                     ctype = self.headers.get("Content-Type", "")
                     if "boundary=" not in ctype:

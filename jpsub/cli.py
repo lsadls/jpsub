@@ -399,10 +399,10 @@ def _ocr_segments(
     paths, spans, masks, cores, frame_dur, offset = _select_keyframes(args, extract_dir)
     key_idx = [k for _, _, k in spans]
     # 无字帧靠 predict 内部跳过 rec,空文本在 build_segments 里被丢弃,无需额外检测
-    # OCR 缓存:已识别过的帧序号/文本存工作目录,重跑时直接复用
+    # OCR 缓存:已识别过的帧序号/文本存工作目录,重跑时直接复用(--force 时忽略,全部重识别)
     ocr_cache_path = work / "ocr-cache.json" if work else None
     ocr_cache: dict[str, str] = {}
-    if ocr_cache_path and ocr_cache_path.exists():
+    if ocr_cache_path and not getattr(args, "force", False) and ocr_cache_path.exists():
         try:
             ocr_cache = json.loads(ocr_cache_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
@@ -442,6 +442,10 @@ def _backup(work: Path, *files: Path) -> None:
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     dest = work / "backup" / ts
+    n = 1
+    while dest.exists():  # 同一秒多次保存:追加序号,保证每次备份独立
+        dest = work / "backup" / f"{ts}-{n}"
+        n += 1
     for f in files:
         if f.is_file():
             dest.mkdir(parents=True, exist_ok=True)
@@ -469,8 +473,8 @@ def _save_work(
     )
     seg_file = work / "segments.json"
     orig_file = work / handoff.ORIG_NAME
-    if seg_file.exists() and not fresh:
-        # 已有识别结果:同键同原文的段保留旧 tr 快照(重跑免重翻)
+    if seg_file.exists():
+        # 已有识别结果:同键同原文的段保留旧 tr 快照(重跑免重翻,含 --force)
         old = {
             handoff.norm_key(handoff.make_key(s.start, s.end)): s
             for s in handoff.read_segments(seg_file)
@@ -513,7 +517,7 @@ def ocr_batch_stage(args, engine, work: Path, progress=None, quiet=False) -> Pat
 
     ocr_cache_path = work / "ocr-cache.json"
     ocr_cache: dict[str, str] = {}
-    if ocr_cache_path.exists():
+    if not getattr(args, "force", False) and ocr_cache_path.exists():
         try:
             ocr_cache = json.loads(ocr_cache_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):

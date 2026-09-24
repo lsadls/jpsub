@@ -66,7 +66,7 @@ button{white-space:nowrap}
 <h2>jpsub 主页</h2>
 <div id=grid>
 <div class=pane>
-<h3>① 操作（按钮不用置灰,无效操作会提示;常用参数可在 ③ 填写）</h3>
+<h3>① 操作</h3>
 <div class=row>
 <span class=lbl>sm号或URL</span>
 <input id=url type=text placeholder="如 sm43168834">
@@ -77,18 +77,18 @@ button{white-space:nowrap}
 <button onclick=cmd('download',['--burn'])>下载+烧录</button>
 </div>
 <div class=row>
-<span class=lbl>本地视频路径</span>
-<input id=local type=text placeholder="/path/to/video.mp4">
+<span class=lbl>本地视频</span>
+<input id=vfile type=file accept=".mp4,.mkv,.webm,video/mp4,video/x-matroska,video/webm" style=display:none>
+<button onclick=$('vfile').click()>选视频…</button>
+<span id=locline style="color:#888;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">未选择</span>
 </div>
 <div class=btns>
 <button onclick=cmd('run',[])>翻译(run)</button>
 <button onclick=cmd('run',['--burn'])>翻译+烧录</button>
-<button onclick=cmd('run',['--notrans'])>仅抽帧OCR</button>
-<button onclick=cmd('extract',[])>extract</button>
+<button onclick=cmd('run',['--notrans'])>OCR</button>
 <button onclick=cmd('run',['--force'])>重新OCR翻译</button>
 <button onclick=cmd('extract',['--force'])>重新OCR</button>
 </div>
-<div class=grp>对选中项(<b id=selname style=color:#fc6>未选择</b>):</div>
 <div class=btns>
 <button onclick=cmd('edit',[])>编辑</button>
 <button onclick=cmd('mask',[])>打码</button>
@@ -127,8 +127,7 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b style=color:#aaa>① 本地视频组</b><br>
 <b>翻译(run)</b> — 本地视频完整流水线<br>
 <b>翻译+烧录</b> — run --burn,已有ASS直接烧<br>
-<b>仅抽帧OCR</b> — --notrans,只产出 segments.json 不翻译<br>
-<b>extract</b> — 同run的抽取阶段(有segments时直接沿用)<br>
+<b>OCR</b> — --notrans,抽帧+OCR产出 segments.json,不翻译<br>
 <b>重新OCR翻译</b> — run --force,无视已有结果重跑全流程<br>
 <b>重新OCR</b> — extract --force,只重跑抽帧OCR<br>
 <b style=color:#aaa>① 对选中项</b><br>
@@ -172,9 +171,24 @@ async function runScript(){
   const j=await post('/script',{text:t});
   if(!j.ok)alert('失败:'+j.err);else refreshJobs();
 }
+let localPath='';
+function pickDone(p){localPath=p;$('locline').textContent=p}
+$('vfile').onchange=async e=>{  // 同打码选图片:原生对话框选文件 -> 上传临时目录
+  const f=e.target.files[0];if(!f)return;
+  const line=$('locline');const old=localPath;
+  line.textContent='上传中…';
+  try{
+    const r=await fetch('/upload-video?name='+encodeURIComponent(f.name),
+      {method:'POST',body:f});
+    const j=await r.json();
+    if(!j.ok)throw new Error(j.err||'上传失败');
+    pickDone(j.path);
+  }catch(err){pickDone(old);alert('失败:'+err.message)}
+  e.target.value='';
+};
 async function cmd(sub,flags){
   const j=await post('/cmd',{sub,flags,name:selName,
-    url:$('url').value.trim(),path:$('local').value.trim(),
+    url:$('url').value.trim(),path:localPath,
     extra:$('extra').value.trim()});
   if(!j.ok)alert('失败:'+j.err);else{refresh();refreshJobs()}
 }
@@ -234,7 +248,9 @@ def _scan_output(root: Path) -> list[dict]:
         if p.name.startswith(("_", ".")):
             continue
         if p.is_dir() and p.name.endswith(".jpsub"):
-            stems.setdefault(p.name[: -len(".jpsub")], {"name": p.name[: -len(".jpsub")]})
+            stems.setdefault(
+                p.name[: -len(".jpsub")], {"name": p.name[: -len(".jpsub")]}
+            )
         elif p.is_file() and p.suffix.lower() in VID_EXTS:
             d = stems.setdefault(p.stem, {"name": p.stem})  # 旧布局散视频
             d["legacy_video"] = True
@@ -253,7 +269,9 @@ def _scan_output(root: Path) -> list[dict]:
                 break
         d["video"] = video is not None
         d.setdefault("work", work.is_dir())
-        d["ass"] = (work / (name + ".ass")).exists() or (root / (name + ".ass")).exists()
+        d["ass"] = (work / (name + ".ass")).exists() or (
+            root / (name + ".ass")
+        ).exists()
         unt = 0
         if work.is_dir():
             seg_file = work / "segments.json"
@@ -490,6 +508,32 @@ class _Home:
                     self.wfile.write(body)
                 elif self.path == "/list":
                     self._json({"items": _scan_output(home.root)})
+                elif self.path.startswith("/upload-video"):
+                    # 原生文件对话框选中的视频上传到临时目录(同打码选图片机制)
+                    import tempfile
+                    import urllib.parse
+
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    name = Path(q.get("name", ["video.mp4"])[0].replace("\\", "/")).name
+                    if Path(name).suffix.lower() not in VID_EXTS:
+                        self._json({"ok": False, "err": f"不是视频文件:{name}"})
+                        return
+                    d = Path(tempfile.gettempdir()) / "jpsub_home_vid"
+                    d.mkdir(exist_ok=True)
+                    dst = d / name
+                    try:
+                        n = int(self.headers.get("Content-Length", 0))
+                        with open(dst, "wb") as fp:  # 分块写盘,不占内存
+                            rem = n
+                            while rem > 0:
+                                chunk = self.rfile.read(min(1 << 20, rem))
+                                if not chunk:
+                                    break
+                                fp.write(chunk)
+                                rem -= len(chunk)
+                        self._json({"ok": True, "path": str(dst)})
+                    except Exception as e:  # noqa: BLE001
+                        self._json({"ok": False, "err": str(e)})
                 elif self.path == "/jobs":
                     for j in home.jobs:
                         if (
@@ -623,8 +667,27 @@ class _Home:
                                     label=f"{url} {_OP[sub]}",
                                 )
                             else:
-                                p = Path(str(body.get("path", "")).strip())
-                                if not need(p.is_file(), f"文件不存在:{p}"):
+                                # 视频来源优先级:① 下拉框(名称或路径) > ② 选中条目
+                                v = str(body.get("path", "")).strip()
+                                p = Path(v) if v else None
+                                if p is not None and not p.is_file():
+                                    p = None  # 下拉框传的是名称,不是路径
+                                    name = v
+                                if p is None:
+                                    name = name or str(body.get("name", "")).strip()
+                                    w2 = home.root / (name + ".jpsub")
+                                    for base in (w2, home.root):
+                                        for ext in VID_EXTS:
+                                            cand = base / (name + ext)
+                                            if cand.is_file():
+                                                p = cand
+                                                break
+                                        if p:
+                                            break
+                                if not need(
+                                    p is not None,
+                                    "请先在 ① 选择视频,或在 ② 选中条目",
+                                ):
                                     return
                                 # run/extract 进程内执行:OCR 模型只加载一次,复用
                                 _spawn_inline(

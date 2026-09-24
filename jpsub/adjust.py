@@ -24,7 +24,8 @@ body{font:14px sans-serif;margin:12px;background:#1e1e1e;color:#ddd}
 #left{flex:0 0 auto}
 canvas{display:block;background:#000;width:min(46vw,80vh);height:auto}
 #right{flex:1;min-width:0;max-height:calc(100vh - 90px);overflow-y:auto}
-button,input,textarea{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 8px;font:inherit}
+button,input,textarea,select{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 8px;font:inherit}
+select option{background:#333;color:#ddd}
 button{cursor:pointer}button:hover{background:#444}
 input[type=text]{width:100%;box-sizing:border-box}
 table{border-collapse:collapse;width:100%;table-layout:fixed}
@@ -34,6 +35,7 @@ tr.act{color:#8f8}
 .jump{cursor:pointer;color:#8cf;padding:0 4px}
 .del{color:#f88;cursor:pointer}
 textarea.src,textarea.tr{overflow:hidden;resize:none;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
+.grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
 .src{color:#999}
 td:nth-child(1),th:nth-child(1){width:200px}
 tr.unt .tr{color:#f80}
@@ -51,15 +53,22 @@ input.tin{width:60px}
 <input type=range id=slider min=0 max=@@DUR@@ step=0.1 value=0 style=width:220px>
 </div>
 <div style=margin-top:6px><button id=add>＋在当前时间新增字幕</button></div>
-<div style=margin-top:6px>
-<button id=save>保存</button> <button id=render>生成字幕</button>
-<button id=restore>还原改动</button>
-@@BURN@@<button id=b2a>转换</button>
-<input id=convf type=text style=width:180px value="@@STEM@@.bcc" title="字幕文件名(.bcc 或 .ass),按扩展名自动互相转换,在工作目录/output/查找">
+<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start">
+<span class=grp><button id=save>保存</button> <button id=render>生成字幕</button></span>
+<span class=grp>
+<button id=b2a>转换</button>
+<input type=file id=convpick accept=".bcc,.ass" style=display:none>
+<button onclick=$('convpick').click() title="选择字幕文件(.bcc/.ass),供转换和烧录使用">选字幕…</button>
+<input id=convf type=hidden value="">
 @@BURN@@
+</span>
+</div>
+<div class=grp style="flex-direction:column;align-items:stretch;width:300px;margin-top:6px">
+<span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
+<select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到 OCR 原始"></select>
+</div>
 <div id=msg></div>
 <span style=color:#888>译文留空 = 删除该字幕;保存时未列出/已删的行不写回</span>
-</div>
 </div>
 <div id=right>
 <table id=list><tr><th>时间</th><th>原文</th><th>译文</th></tr></table>
@@ -125,6 +134,7 @@ $('add').onclick=()=>{
   rows.splice(idx,0,row);
   syncList();msg.textContent='已新增,记得填写时间与译文'};
 $('b2a').onclick=async()=>{
+  if(!$('convf').value.trim())return msg.textContent='请先点「选字幕…」选择 .bcc/.ass 文件';
   msg.textContent='转换中...';
   const j=await post2('/conv',{file:$('convf').value.trim()});
   msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
@@ -136,7 +146,9 @@ function post2(path,body){
 async function save(){
   const r=await fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(rows)});
-  const j=await r.json();msg.textContent=j.ok?`已保存 ${j.n} 条`:'保存失败:'+j.err;return j.ok;
+  const j=await r.json();msg.textContent=j.ok?`已保存 ${j.n} 条`:'保存失败:'+j.err;
+  if(j.ok)loadBks();
+  return j.ok;
 }
 $('save').onclick=save;
 $('render').onclick=async()=>{
@@ -146,16 +158,27 @@ $('render').onclick=async()=>{
   msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
 };
 $('restore').onclick=async()=>{
-  if(!confirm('确定还原到 OCR 原始结果?所有编辑(译文/增删)都会撤销'))return;
-  const j=await(await fetch('/restore',{method:'POST'})).json();
+  const bk=$('bksel').value;
+  if(!confirm(bk?'确定还原到备份 '+bk+'?未保存的改动会丢失':'确定还原到 OCR 原始结果?所有编辑(译文/增删)都会撤销'))return;
+  const j=await post2('/restore',{name:bk||''});
   if(j.ok)location.reload();
   else msg.textContent='失败:'+j.err;
+};
+async function loadBks(){
+  const j=await(await fetch('/backups')).json();
+  const s=$('bksel');s.innerHTML='';
+  (j.names||[]).forEach(n=>{
+      const o=document.createElement('option');o.value=n;o.textContent=n;s.appendChild(o);});
+}
+loadBks();
+$('convpick').onchange=e=>{
+  if(e.target.files.length)$('convf').value=e.target.files[0].name;
 };
 const burn=document.getElementById('burn');
 if(burn)burn.onclick=async()=>{
   if(!await save())return;
-  burn.disabled=true;msg.textContent='烧录中(渲染+ffmpeg,需要一会儿)...';
-  const j=await(await fetch('/burn',{method:'POST'})).json();
+  burn.disabled=true;msg.textContent='烧录中(ffmpeg,需要一会儿)...';
+  const j=await post2('/burn',{file:$('convf')?$('convf').value.trim():''});
   burn.disabled=false;msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
 };
 function scrollList(){
@@ -347,6 +370,21 @@ class _Editor:
                 _touch()
                 if self.path == "/ping":
                     self._json({})
+                elif self.path == "/backups":
+                    bdir = editor.work / "backup"
+                    names = (
+                        sorted(
+                            (
+                                p.name
+                                for p in bdir.iterdir()
+                                if p.is_dir() and (p / "segments.json").is_file()
+                            ),
+                            reverse=True,
+                        )
+                        if bdir.is_dir()
+                        else []
+                    )
+                    self._json({"ok": True, "names": names})
                 elif self.path == "/":
                     body = _render_page(editor).encode()
                     self.send_response(200)
@@ -372,6 +410,19 @@ class _Editor:
                 else:
                     self.send_error(404)
 
+            def _resolve_file(self, f: str) -> Path:
+                """按文件选择器的值找文件:绝对路径直用,否则在工作目录/工作目录旁找。"""
+                f = str(f).strip()
+                src = Path(f) if Path(f).is_absolute() else None
+                if src is None:
+                    for base in (editor.work, editor.work.parent):
+                        if (base / f).exists():
+                            return base / f
+                    src = editor.work / f
+                if not src.is_file():
+                    raise FileNotFoundError(f"找不到文件:{src}")
+                return src
+
             def do_POST(self):
                 _touch()
                 n = int(self.headers.get("Content-Length", 0))
@@ -389,17 +440,7 @@ class _Editor:
                         self._json({"ok": False, "err": str(e)})
                 elif self.path == "/conv":
                     try:
-                        f = Path(json.loads(body).get("file", "")).strip()
-                        src = Path(f) if Path(f).is_absolute() else None
-                        if src is None:
-                            for base in (editor.work, editor.work.parent):
-                                if (base / f).exists():
-                                    src = base / f
-                                    break
-                            else:
-                                src = editor.work / f
-                        if not src.is_file():
-                            raise FileNotFoundError(f"找不到文件:{src}")
+                        src = self._resolve_file(json.loads(body).get("file", ""))
                         ext = src.suffix.lower()
                         if ext == ".bcc":
                             out = _bcc2ass(src)
@@ -418,17 +459,46 @@ class _Editor:
                         self._json({"ok": False, "err": str(e)})
                 elif self.path == "/restore":
                     try:
-                        n = handoff.restore_from_orig(editor.work)
+                        name = ""
+                        try:
+                            name = str(json.loads(body).get("name", "") or "").strip()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        if name:
+                            src = editor.work / "backup" / name / "segments.json"
+                            if not src.is_file():
+                                raise FileNotFoundError(f"找不到备份:{src}")
+                            from . import cli
+                            from .segment import Segment as _Seg
+
+                            segs = handoff.read_segments(src)
+                            cur = editor.work / "segments.json"
+                            cli._backup(editor.work, cur)  # 还原前备份当前状态
+                            handoff.write_segments(
+                                [
+                                    _Seg(s.start, s.end, s.text, s.tr)
+                                    for s in segs
+                                ],
+                                cur,
+                                comment=handoff.read_meta(cur).get("comment"),
+                            )
+                            n = len(segs)
+                        else:
+                            n = handoff.restore_from_orig(editor.work)
                         self._json({"ok": True, "n": n})
-                    except FileNotFoundError:
-                        self._json(
-                            {"ok": False, "err": "没有原始备份 segments.orig.json"}
-                        )
+                    except FileNotFoundError as e:
+                        self._json({"ok": False, "err": str(e)})
                     except Exception as e:  # noqa: BLE001
                         self._json({"ok": False, "err": str(e)})
                 elif self.path == "/burn":
                     try:
-                        out = editor.run_burn()
+                        f = ""
+                        try:
+                            f = str(json.loads(body).get("file", "") or "").strip()
+                        except Exception:  # noqa: BLE001
+                            pass
+                        ass_file = self._resolve_file(f) if f else None
+                        out = editor.run_burn(ass_file)
                         self._json({"ok": True, "out": str(out)})
                     except Exception as e:  # noqa: BLE001
                         self._json({"ok": False, "err": str(e)})
@@ -453,13 +523,30 @@ class _Editor:
         args = cli.parse_args(["render", str(self.work)])
         return cli._render(args)
 
-    def run_burn(self) -> Path:
+    def run_burn(self, ass_file: Path | None = None) -> Path:
         from . import cli
 
         if not self.video:
             raise SystemExit("错误:找不到视频文件,无法烧录")
-        ass = self.run_render()
-        return cli._burn(self.video, ass)
+        if ass_file is None:
+            ass = self.run_render()
+        else:
+            # 文件选择器指定的字幕:.bcc 先转 .ass,再直接烧录
+            ass = _bcc2ass(ass_file) if ass_file.suffix.lower() == ".bcc" else ass_file
+        video = self.video
+        masks = self.work / "masks.json"
+        if not masks.exists():  # 兼容旧版 masks.txt
+            old = self.work / "masks.txt"
+            if old.exists():
+                masks = old
+        if masks.is_file():  # 与 home「烧录」一致:先打码再烧字幕
+            from .mask import apply_masks
+
+            out = cli._product_out(video, ".masked.mp4")
+            print(f"先应用打码:{masks} -> {out}")
+            apply_masks(video, masks, out)
+            video = out
+        return cli._burn(video, ass)
 
 
 def _render_page(p: _Editor) -> str:

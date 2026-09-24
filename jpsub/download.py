@@ -36,6 +36,11 @@ def _proxy_args() -> list[str]:
     return ["--proxy", settings.PROXY] if settings.PROXY else []
 
 
+def _ffmpeg_args() -> list[str]:
+    """告诉 yt-dlp ffmpeg 位置(Windows 上可能不在 PATH,放程序目录/bin 下)。"""
+    return ["--ffmpeg-location", settings.binary("ffmpeg")]
+
+
 def _cookies_args() -> list[str]:
     return (
         ["--cookies-from-browser", settings.COOKIES_FROM_BROWSER]
@@ -53,7 +58,7 @@ def _run_ytdlp(
     按当前目标文件名区分视频/音频流,回调形如 progress("视频 43%")。
     失败时把 stderr 抛出。
     """
-    cmd = [settings.binary("yt-dlp"), *_cookies_args(), *_proxy_args(), *args]
+    cmd = [settings.binary("yt-dlp"), *_ffmpeg_args(), *_cookies_args(), *_proxy_args(), *args]
     if not quiet:
         return subprocess.run(cmd, check=check)
     if progress:
@@ -184,10 +189,11 @@ def download(
         _say(f"选定格式:{fmt}(无独立音频流)")
     work_dir = out_dir / f"{name}.jpsub"  # 视频直接下进工作目录(新布局)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # 标题里的 % 会破坏 -o 占位符模板,模板中需转义为 %%
     _run_ytdlp([
         "-f", fmt,
         "--merge-output-format", "mp4",
-        "-o", str(work_dir / f"{name}.%(ext)s"),
+        "-o", str(work_dir / f"{name.replace('%', '%%')}.%(ext)s"),
         "--no-warnings",
         url,
     ], quiet=quiet, progress=progress)
