@@ -11,15 +11,27 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 import sys
 import threading
-import webbrowser
+import time
 from pathlib import Path
 
-from . import cli, handoff, progress
+from . import cli, handoff, progress, utils
 
-VID_EXTS = (".mp4", ".mkv", ".webm")
+VID_EXTS = utils.VID_EXTS
+
+
+# 子进程输出清洗:去掉 ANSI 转义序列(彩色/光标控制)与其他控制字符
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|[\x00-\x08\x0b-\x1f]"
+)
+
+
+def _sanitize(line: str) -> str:
+    return _ANSI_RE.sub("", line)
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
@@ -81,8 +93,12 @@ button{white-space:nowrap}
 .outbox pre{margin:0;font:12px monospace;color:#9c9;white-space:pre-wrap}
 .job{padding:2px 4px;cursor:pointer}
 .job.sel{background:#3a3a26}
+.tagb{padding:4px 10px}
 </style>
-<h2>jpsub 主页</h2>
+<div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+<h2 style=margin:0>jpsub 主页</h2>
+<button onclick=quitApp()>退出程序</button>
+</div>
 <div id=grid>
 <div class=pane>
 <h3>① 操作</h3>
@@ -107,16 +123,20 @@ button{white-space:nowrap}
 <button onclick=cmd('run',['--burn'])>翻译+烧录</button>
 <button onclick=cmd('run',['--notrans'])>OCR</button>
 <button onclick=cmd('run',['--force'])>重新OCR翻译</button>
-<button onclick=cmd('extract',['--force'])>重新OCR</button>
+<button onclick=cmd('extract',['--force','--notrans'])>重新OCR</button>
 </div>
 <div class=btns>
 <button onclick=cmd('edit',[])>编辑</button>
 <button onclick=cmd('mask',[])>打码</button>
+<button onclick=openCrop()>选择原视频字幕区域</button>
 <button onclick=cmd('burn',[])>烧录</button>
 <button onclick=cmd('render',[])>生成字幕</button>
+<button onclick=copyInfo()>复制info</button>
+<button onclick=copyTag()>复制tag</button>
 <button onclick=cmd('translate',[])>续翻</button>
 <button onclick=cmd('translate',['--force'])>重翻</button>
 <button onclick=delWork()>删除工作目录</button>
+<button onclick=delVid()>删除视频</button>
 </div>
 <div class=row>
 <span class=lbl>自定义命令</span>
@@ -125,7 +145,7 @@ button{white-space:nowrap}
 </div>
 </div>
 <div class=pane>
-<h3>② output/ 视频与工作目录（点击行选中） <button onclick=openDir()>打开文件夹</button></h3>
+<h3>② output/ 视频与工作目录（点击行选中） <span id=selname style="font-weight:normal;color:#fc6;font-size:12px"></span> <button onclick=openDir()>打开文件夹</button></h3>
 <div id=listbox><table id=list><tr><th style=width:50%>名称</th><th>状态</th></tr></table></div>
 </div>
 <div class=pane>
@@ -159,8 +179,11 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b style=color:#aaa>① 对选中项</b><br>
 <b>编辑</b> — 浏览器译文调整器(可一键还原OCR原始结果)<br>
 <b>打码</b> — 打码选取器(生成masks.json)<br>
+<b>选择字幕区</b> — 页内框选字幕区域,生成 --crop 参数存到工作目录,抽帧时自动优先使用<br>
 <b>烧录</b> — 把ASS烧进视频;有masks.json时自动先打码再烧字幕<br>
 <b>生成字幕</b> — render,用现有译文生成ASS<br>
+<b>复制info</b> — 把选中条目工作目录的 info.txt 复制到剪贴板<br>
+<b>复制tag</b> — 弹窗列出 info.txt 标签行里的所有 tag,点击单个 tag 复制<br>
 <b>续翻</b> — translate,只翻没翻过的句子<br>
 <b>重翻</b> — translate --force,忽略译文和缓存全部重翻<br>
 <b>删除工作目录</b> — 删除选中条目的 <名称>.jpsub(字幕/译文全删,视频保留)<br>
@@ -169,7 +192,35 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>
 <b>① 自定义命令</b> — 输入完整 jpsub 命令(子命令+参数,如 download sm123 -v 720p),点运行即在后台执行,输出显示在任务里<br>
 <b>④ 终止选中</b> — 结束选中的任务;自定义参数框的内容会追加到所有命令后<br>
+<b>退出程序</b> — 右上角按钮,终止程序(含正在运行的任务)<br>
 force 操作与覆盖旧文件前都会自动备份到工作目录 backup/时间戳/ 文件夹
+</div>
+<div id=cropbox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;overflow:auto">
+<div style="margin:24px auto;width:max-content;max-width:94vw;background:#252525;border:1px solid #555;border-radius:8px;padding:12px">
+<h3 style="margin:0 0 8px">字幕区选择 - <span id=cropname></span> <button onclick=closeCrop()>关闭</button></h3>
+<div id=cropwrap style="position:relative;display:inline-block">
+<canvas id=cropcv style="display:block;background:#000;width:min(58vw,68vh)"></canvas>
+<div id=cropov style="position:absolute;left:0;top:0;width:100%;height:100%;cursor:crosshair"></div>
+</div>
+<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+时间 <input id=cropt type=text value=0:00.0 style=width:70px>
+<input type=range id=cropslider min=0 max=100 step=0.1 value=0 style=width:220px>
+</div>
+<div style="margin-top:6px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+crop参数 <input id=cropval type=text readonly style="width:260px;background:#181818;color:#8cf">
+<button id=cropsave onclick=saveCrop()>保存</button>
+<button onclick=clearCrop()>清除</button>
+<span id=cropmsg style=color:#fc6></span>
+</div>
+<div class=hint style="color:#888;margin-top:4px">在画面上左键拖框选出字幕区域,左键拖动选框内部移动位置,右键拖动选框边缘/角调整大小,保存后抽帧(--crop 未显式指定时)优先使用;清除则恢复默认。拖动时间滑杆换画面预览。</div>
+</div>
+</div>
+<div id=tagbox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:101;overflow:auto" onclick="if(event.target===this)this.style.display='none'">
+<div style="margin:60px auto;width:max-content;max-width:80vw;background:#252525;border:1px solid #555;border-radius:8px;padding:14px">
+<h3 style="margin:0 0 10px">标签 - <span id=tagname></span> <button onclick=$('tagbox').style.display='none'>关闭</button></h3>
+<div id=taglist style="display:flex;flex-wrap:wrap;gap:6px;max-width:70vw"></div>
+<div class=hint style="color:#888;margin-top:8px">点击任意标签复制到剪贴板;点弹层外部或「关闭」收起</div>
+</div>
 </div>
 <script>
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
@@ -179,7 +230,8 @@ async function post(path,body){
   return r.json();
 }
 let selName=null;
-function setSel(n){selName=n;$('selname').textContent=n||'未选择';
+function setSel(n){selName=n;
+  const el=$('selname');if(el)el.textContent=n||'未选择';
   document.querySelectorAll('#list tr').forEach(tr=>
     tr.classList.toggle('sel',tr.dataset.name===n));}
 async function delWork(){
@@ -187,6 +239,12 @@ async function delWork(){
   if(!confirm('确定删除 '+selName+' 的工作目录?\\n字幕、译文等将全部删除,视频保留'))return;
   const j=await post('/del',{name:selName});
   if(!j.ok)alert('失败:'+j.err);else{setSel(null);refresh()}
+}
+async function delVid(){
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  if(!confirm('确定删除 '+selName+' 的视频文件?\\n字幕/译文等工作目录内其他文件保留'))return;
+  const j=await post('/delvid',{name:selName});
+  if(!j.ok)alert('失败:'+j.err);else{alert('已删除 '+j.n+' 个视频');refresh()}
 }
 async function openDir(){
   const j=await post('/open',{});
@@ -246,10 +304,14 @@ async function killJob(){
   const j=await post('/kill',{idx:selJob});
   if(!j.ok)alert('失败:'+j.err);else refreshJobs();
 }
+let lastList='';
 async function refresh(){
   const j=await(await fetch('/list')).json();
+  const s=JSON.stringify(j.items);
+  if(s===lastList)return;  // 无变化不重建表格,避免重建瞬间吞掉点击
+  lastList=s;
   const tb=$('list');
-  tb.innerHTML='<tr><th style=width:50%>名称</th><th>状态</th></tr>';
+  tb.innerHTML='<tr><th style=width:44%>名称</th><th style=width:26%>选择字幕区</th><th>状态</th></tr>';
   j.items.forEach(it=>{
     const tr=document.createElement('tr');
     tr.dataset.name=it.name;
@@ -259,20 +321,204 @@ async function refresh(){
     else if(it.ass)badge='<span class="badge ok">已生成字幕</span>';
     if(it.unt>0)badge+=` <span class="badge warn">${it.unt} 条未译</span>`;
     tr.innerHTML=`<td>${esc(it.name)}${badge}</td>`+
+      `<td>${it.crop?esc(it.crop):'默认'}</td>`+
       `<td>${it.video?'有视频':'无视频'}${it.work?' / 有工作目录':''}</td>`;
     tr.onclick=()=>setSel(it.name);
     tb.appendChild(tr);
   });
+}
+async function copyInfo(){
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  const j=await(await fetch('/info?name='+encodeURIComponent(selName))).json();
+  if(!j.ok)return alert('失败:'+j.err);
+  try{await navigator.clipboard.writeText(j.text);alert('info 已复制到剪贴板')}
+  catch(e){prompt('浏览器拒绝访问剪贴板,请手动复制:',j.text)}
+}
+async function copyTag(){
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  const j=await(await fetch('/tags?name='+encodeURIComponent(selName))).json();
+  if(!j.ok)return alert('失败:'+j.err);
+  if(!j.tags.length)return alert('info 里没有标签行(旧下载或模板去掉了 {tags})');
+  $('tagname').textContent=selName;
+  $('taglist').innerHTML=j.tags.map(t=>
+    `<button class=tagb onclick=cpTag(this) data-t="${esc(t)}">${esc(t)}</button>`).join('');
+  $('tagbox').style.display='block';
+}
+async function cpTag(b){
+  try{await navigator.clipboard.writeText(b.dataset.t);
+    b.textContent='✓ 已复制';setTimeout(()=>b.textContent=b.dataset.t,800)}
+  catch(e){prompt('浏览器拒绝访问剪贴板,请手动复制:',b.dataset.t)}
+}
+async function quitApp(){
+  if(!confirm('确定退出 jpsub 程序?正在运行的任务将被终止'))return;
+  quitting=true;  // 停掉心跳,让 /quit 的退出流程不受干扰
+  try{await post('/quit',{})}catch(e){}
+  window.close();  // 页面随程序一同关闭(浏览器允许时);失败则显示遮罩提示
+  const d=document.createElement('div');
+  d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);color:#eee;display:flex;align-items:center;justify-content:center;font-size:22px;z-index:99999';
+  d.textContent='程序已退出,请关闭此页面';
+  document.body.appendChild(d);
+}
+// ---- 心跳:程序退出(无论何种方式)后自动关闭页面/显示遮罩 ----
+let quitting=false;  // 主动退出中:停掉心跳,避免打断 /quit 的退出流程
+setInterval(async()=>{
+  if(quitting)return;
+  try{
+    const r=await fetch('/ping?t='+Date.now());
+    if(!r.ok)throw 0;
+  }catch(e){
+    if(document.getElementById('deadov'))return;
+    window.close();  // 浏览器允许时直接关页(脚本打开的窗口可以)
+    const d=document.createElement('div');d.id='deadov';
+    d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.85);color:#eee;display:flex;align-items:center;justify-content:center;font-size:22px;z-index:99999';
+    d.textContent='程序已退出,请关闭此页面';
+    document.body.appendChild(d);
+  }
+},3000);
+// 页面关闭/刷新时通知程序;关闭→程序退出(编辑/打码窗口连带关闭),
+// 刷新→重载后的第一个请求会取消延迟退出,程序继续运行
+addEventListener('pagehide',()=>{if(!quitting)navigator.sendBeacon('/quit')});
+// ---- 字幕区选择器(页内弹层,框选生成 --crop 参数) ----
+let cname=null,cw=0,ch=0,cdur=0,cropT=0,csel=null,cdrag=null,chov=null,cfetch=false,cpending=null,clast=null;
+const fmtT=s=>`${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`;
+const parseT=s=>{s=String(s).trim();if(/^\\d+(\\.\\d+)?$/.test(s))return+s;
+  const p=s.split(':');if(p.length>3)return NaN;
+  return p.reduce((a,v)=>a*60+(+v||0),0)};
+async function openCrop(){
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  const j=await(await fetch('/crop-meta?name='+encodeURIComponent(selName))).json();
+  if(!j.ok)return alert('失败:'+j.err);
+  cname=selName;cw=j.vw;ch=j.vh;cdur=j.dur;csel=null;cdrag=null;chov=null;
+  $('cropname').textContent=selName;
+  $('cropval').value=j.crop||'';
+  $('cropmsg').textContent='';
+  $('cropt').value=fmtT(0);
+  const sl=$('cropslider');sl.max=cdur;sl.value=0;
+  $('cropbox').style.display='block';
+  const cv=$('cropcv');cv.width=cw;cv.height=ch;
+  cropT=0;loadCropFrame();
+}
+function closeCrop(){$('cropbox').style.display='none';refresh()}
+function loadCropFrame(){  // 单飞+尾随:快速拖动滑杆时只补最新一帧
+  if(cfetch){cpending=cropT;return}
+  cfetch=true;
+  const im=new Image();
+  im.onload=()=>{clast=im;drawCrop(im);cfetch=false;
+    if(cpending!==null){cpending=null;loadCropFrame()}};
+  im.onerror=()=>{cfetch=false};
+  im.src='/crop-frame?name='+encodeURIComponent(cname)+'&t='+cropT.toFixed(3)+'&r='+Math.random();
+}
+function calcCrop(r){  // 原视频像素矩形 -> --crop 的 上:下:左:右 边距比例
+  const top=r[1]/ch,bot=1-(r[1]+r[3])/ch,left=r[0]/cw,right=1-(r[0]+r[2])/cw;
+  return [top,bot,left,right].map(v=>Math.max(0,Math.min(1,v)).toFixed(4)).join(':');
+}
+function drawCrop(im){  // 不传图时用缓存帧重绘,避免拖动/松手后画面变黑
+  const cv=$('cropcv'),ctx=cv.getContext('2d');
+  ctx.clearRect(0,0,cw,ch);
+  im=im||clast;
+  if(im)ctx.drawImage(im,0,0,cw,ch);
+  for(const r of [chov,csel]){
+    if(!r)continue;
+    ctx.strokeStyle=r===csel?'#0f0':'#f44';
+    ctx.setLineDash(r===csel?[]:[5,3]);ctx.lineWidth=2;
+    ctx.strokeRect(r[0],r[1],r[2],r[3]);ctx.setLineDash([]);
+  }
+}
+const cropsc=()=>{const r=$('cropcv').getBoundingClientRect();return r.width/cw};
+$('cropov').oncontextmenu=e=>e.preventDefault();
+function normSel(x0,y0,x1,y1){  // 任意两点 -> 规范化选框(≥5px 才有效)
+  const x=Math.max(0,Math.round(Math.min(x0,x1))),y=Math.max(0,Math.round(Math.min(y0,y1)));
+  const w=Math.min(Math.round(Math.abs(x1-x0)),cw-x),h=Math.min(Math.round(Math.abs(y1-y0)),ch-y);
+  return (w<5||h<5)?null:[x,y,w,h];
+}
+function nearSel(px,py){  // 距选框边缘 8px 内返回可拖的边/角 {l,t,r,b}
+  if(!csel)return null;
+  const T=8/cropsc(),[x,y,w,h]=csel;
+  const l=Math.abs(px-x)<=T,r=Math.abs(px-(x+w))<=T,t=Math.abs(py-y)<=T,b=Math.abs(py-(y+h))<=T;
+  const inx=px>=x-T&&px<=x+w+T,iny=py>=y-T&&py<=y+h+T;
+  if(!((l||r)&&iny)&&!((t||b)&&inx))return null;
+  return {l,t,r,b};
+}
+$('cropov').onpointerdown=e=>{
+  const r=$('cropcv').getBoundingClientRect(),s=cropsc();
+  const px=(e.clientX-r.left)/s,py=(e.clientY-r.top)/s;
+  $('cropov').setPointerCapture(e.pointerId);
+  if(e.button===2){  // 右键:靠近已有选框边缘/角则调整大小,否则忽略
+    const g=nearSel(px,py);
+    if(g&&csel)cdrag={mode:'rsz',g,orig:csel.slice(),ox:px,oy:py};
+    return;
+  }
+  if(e.button!==0)return;
+  const g=nearSel(px,py);  // 边缘带优先调整大小,框内则移动,框外重新框选
+  if(g&&csel){cdrag={mode:'rsz',g,orig:csel.slice(),ox:px,oy:py};return}
+  if(csel&&px>csel[0]&&px<csel[0]+csel[2]&&py>csel[1]&&py<csel[1]+csel[3]){
+    cdrag={mode:'mv',orig:csel.slice(),ox:px,oy:py};return}
+  cdrag={mode:'new',x0:px,y0:py};chov=[px,py,px,py];
+};
+$('cropov').onpointermove=e=>{
+  const r=$('cropcv').getBoundingClientRect(),s=cropsc();
+  const px=(e.clientX-r.left)/s,py=(e.clientY-r.top)/s;
+  if(!cdrag){$('cropov').style.cursor=nearSel(px,py)?'nwse-resize':'crosshair';return}
+  if(cdrag.mode==='new'){
+    chov=[cdrag.x0,cdrag.y0,px-cdrag.x0,py-cdrag.y0];  // strokeRect 接受负宽高,实时预览跟随鼠标
+    drawCrop();return;
+  }
+  if(cdrag.mode==='mv'){  // 左键移动:整体平移,钳制在画面内
+    const [x,y,w,h]=cdrag.orig;
+    chov=[Math.max(0,Math.min(x+px-cdrag.ox,cw-w)),Math.max(0,Math.min(y+py-cdrag.oy,ch-h)),w,h];
+    drawCrop();return;
+  }
+  const [x,y,w,h]=cdrag.orig,g=cdrag.g;  // 右键调整:拖到的位置替换对应边
+  const x0=g.l?px:x,x1=g.r?px:x+w,y0=g.t?py:y,y1=g.b?py:y+h;
+  chov=[x0,y0,x1-x0,y1-y0];
+  drawCrop();
+};
+$('cropov').onpointerup=e=>{
+  if(!cdrag)return;
+  const r=$('cropcv').getBoundingClientRect(),s=cropsc();
+  const px=(e.clientX-r.left)/s,py=(e.clientY-r.top)/s;
+  let sel=null;
+  if(cdrag.mode==='new')sel=normSel(cdrag.x0,cdrag.y0,px,py);
+  else if(cdrag.mode==='mv')sel=[Math.round(chov[0]),Math.round(chov[1]),cdrag.orig[2],cdrag.orig[3]];
+  else{const [x,y,w,h]=cdrag.orig,g=cdrag.g;
+    sel=normSel(g.l?px:x,g.t?py:y,g.r?px:x+w,g.b?py:y+h)||csel}  // 拖太小则保持原框
+  cdrag=null;chov=null;
+  if(sel){csel=sel;$('cropval').value=calcCrop(csel);$('cropmsg').textContent=''}
+  drawCrop();
+};
+function setCropT(v){
+  cropT=Math.min(cdur,Math.max(0,v));
+  $('cropt').value=fmtT(cropT);$('cropslider').value=cropT;
+  loadCropFrame();
+}
+$('cropt').onchange=()=>{const v=parseT($('cropt').value);if(!isNaN(v))setCropT(v)};
+$('cropslider').oninput=()=>setCropT(+$('cropslider').value);
+async function saveCrop(){
+  if(!$('cropval').value)return alert('请先在画面上拖框选择字幕区');
+  const j=await post('/crop-save',{name:cname,crop:$('cropval').value});
+  if(!j.ok)alert('失败:'+j.err);
+  else{$('cropmsg').textContent='已保存,抽帧时将优先使用';refresh()}
+}
+async function clearCrop(){
+  const j=await post('/crop-save',{name:cname,crop:null});
+  if(!j.ok)alert('失败:'+j.err);
+  else{$('cropval').value='';$('cropmsg').textContent='已清除,恢复默认字幕区';refresh()}
 }
 refresh();refreshJobs();
 setInterval(refresh,3000);setInterval(refreshJobs,1000);
 </script>"""
 
 
-def _scan_output(root: Path) -> list[dict]:
-    """扫描 output/,以 <视频>.jpsub 工作目录为主条目。
+def _work_of_name(root: Path, name: str) -> Path:
+    """按列表名找工作目录:<name> 目录。"""
+    return utils.work_of_name(root, name)
 
-    新布局:视频/ASS 在工作目录内;旧布局(工作目录旁)也兼容识别。
+
+def _scan_output(root: Path) -> list[dict]:
+    """扫描 output/,以工作目录为主条目。
+
+    新布局:任意名目录,视频/ASS/info/cover 在目录内,内部文件在 .jpsub/ 下;
+    根目录散视频作为本地视频条目列出。
     """
     stems: dict[str, dict] = {}
     if not root.is_dir():
@@ -280,40 +526,44 @@ def _scan_output(root: Path) -> list[dict]:
     for p in sorted(root.iterdir()):
         if p.name.startswith(("_", ".")):
             continue
-        if p.is_dir() and p.name.endswith(".jpsub"):
-            stems.setdefault(
-                p.name[: -len(".jpsub")], {"name": p.name[: -len(".jpsub")]}
-            )
+        if p.is_dir():
+            if (
+                (p / handoff.HIDDEN_DIR).is_dir()
+                or (p / "segments.json").is_file()
+                or any(
+                    (p / f).is_file()
+                    for f in ("info.txt", "cover.jpg")
+                )
+                or any(
+                    q.suffix.lower() in VID_EXTS
+                    for q in p.iterdir()
+                    if q.is_file()
+                )
+            ):
+                stems.setdefault(p.name, {"name": p.name})
         elif p.is_file() and p.suffix.lower() in VID_EXTS:
-            d = stems.setdefault(p.stem, {"name": p.stem})  # 旧布局散视频
+            d = stems.setdefault(p.stem, {"name": p.stem})  # 散视频条目
             d["legacy_video"] = True
     items = []
     for d in stems.values():
         name = d["name"]
-        work = root / (name + ".jpsub")
-        video = None
-        for base in (work, root):  # 新布局优先,旧布局回退
-            for ext in VID_EXTS:
-                v = base / (name + ext)
-                if v.exists():
-                    video = v
-                    break
-            if video:
-                break
+        work = _work_of_name(root, name)
+        video = _named_video(root, name)
         d["video"] = video is not None
         d.setdefault("work", work.is_dir())
+        d["crop"] = cli._read_crop(work) if work.is_dir() else None
         d["ass"] = (work / (name + ".ass")).exists() or (
             root / (name + ".ass")
         ).exists()
         unt = 0
         if work.is_dir():
-            seg_file = work / "segments.json"
+            seg_file = handoff.seg_path(work)
             if seg_file.exists():
                 try:
                     segs = handoff.read_segments(seg_file)
                     from .cache import TranslationCache
 
-                    cache = TranslationCache(work / "cache.json")
+                    cache = TranslationCache(handoff.cache_path(work))
                     unt = sum(
                         1
                         for s in segs
@@ -329,19 +579,79 @@ def _scan_output(root: Path) -> list[dict]:
     return items
 
 
+def _scan_output_cached(home: "_Home") -> list[dict]:
+    """带缓存的扫描:用轻量 mtime 签名判断目录树是否变化,未变直接复用上次结果,
+    避免每 3 秒轮询都重读全部工作目录的 segments/cache 导致 /list 卡顿。"""
+    root = home.root
+    sig = []
+    if root.is_dir():
+        for p in sorted(root.iterdir()):
+            if p.name.startswith(("_", ".")):
+                continue
+            try:
+                sig.append((p.name, p.stat().st_mtime))
+            except OSError:  # noqa: BLE001
+                continue
+            if p.is_dir():
+                for f in (
+                    "segments.json",
+                    "cache.json",
+                    "crop.json",
+                    handoff.HIDDEN_DIR + "/segments.json",
+                    handoff.HIDDEN_DIR + "/cache.json",
+                    handoff.HIDDEN_DIR + "/crop.json",
+                ):
+                    fp = p / f
+                    if fp.exists():
+                        try:
+                            sig.append((f, fp.stat().st_mtime))
+                        except OSError:  # noqa: BLE001
+                            pass
+    sig = tuple(sig)
+    if home._scan_cache is not None and home._scan_sig == sig:
+        return home._scan_cache
+    items = _scan_output(root)
+    home._scan_sig, home._scan_cache = sig, items
+    return items
+
+
+def _named_video(root: Path, name: str) -> Path | None:
+    """按条目名找视频,复用 utils.named_video。"""
+    return utils.named_video(root, name)
+
+
 class _Home:
     def __init__(self, root: Path):
         import contextlib
         import queue
 
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from http.server import BaseHTTPRequestHandler
 
         self.root = root
         self.jobs: list[dict] = []  # {proc|inline, desc, st, line}
+        self._scan_sig = None  # output 扫描结果缓存:目录树未变时 /list 直接复用
+        self._scan_cache: list[dict] | None = None
         home = self
+
+        # ---- 操作/任务日志:全部追加到项目根 logs/home.log(与 cwd 无关) ----
+        _log_lock = threading.Lock()
+        _log_path = Path(__file__).resolve().parent.parent / "logs" / "home.log"
+
+        def _log(msg: str) -> None:
+            with _log_lock:
+                try:
+                    _log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with _log_path.open("a", encoding="utf-8") as f:
+                        f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+                except OSError:
+                    pass
+
+        _log(f"主页启动:{root}")
+        self._log = _log  # 供退出等外部位置调用
 
         def _on_line(j: dict, line: str) -> None:
             j["line"] = line
+            _log(f"[{j.get('label') or '任务'}] {line}")
             if j.get("show"):
                 lines = j.setdefault("lines", [])
                 if line.startswith("[第 ") and lines and lines[-1].startswith("[第 "):
@@ -350,16 +660,7 @@ class _Home:
                     lines.append(line)
                     del lines[:-200]
 
-        # ---- 进程内任务队列:OCR 模型只加载一次,任务串行复用 ----
-        self._engine = None
-
-        def _get_engine():
-            if home._engine is None:
-                from .ocr import PaddleOcrEngine
-
-                home._engine = PaddleOcrEngine()
-            return home._engine
-
+        # ---- 进程内任务队列:任务串行执行 ----
         def _worker():
             while True:
                 j, args = home._q.get()
@@ -369,9 +670,8 @@ class _Home:
                     home._q.task_done()
                     continue
                 home._cur = j
+                _log(f"内联任务开始:{j.get('label')} args={args}")
                 try:
-                    if home._engine is None:
-                        j["line"] = "加载 OCR 模型中…"
                     with (
                         contextlib.redirect_stdout(
                             progress.LineCapture(
@@ -387,33 +687,25 @@ class _Home:
                             )
                         ),  # tqdm 走 stderr
                     ):
-                        cli.run(args, engine=home)  # home 自己充当引擎代理
+                        cli.run(args)
                     j["st"] = "done"
                     j["line"] = "已完成"
+                    _log(f"内联任务完成:{j.get('label')}")
                 except SystemExit as e:  # noqa: BLE001
                     j["st"] = "fail"
                     j["line"] = str(e) or "失败"
+                    _log(f"内联任务失败:{j.get('label')} {j['line']}")
                 except Exception as e:  # noqa: BLE001
                     j["st"] = "fail"
                     j["line"] = f"{e}"
+                    _log(f"内联任务异常:{j.get('label')} {j['line']}")
                 finally:
                     home._cur = None
                     home._q.task_done()
-                    if home._q.empty():
-                        home._engine = None  # 空闲即卸载模型,释放内存
 
         self._q = queue.Queue()
         self._cur = None
         threading.Thread(target=_worker, daemon=True).start()
-
-        # 引擎代理接口(cli.run 需要 engine.run(path))
-        def engine_run(path: str) -> str:
-            j = home._cur
-            if j is not None and j.get("cancel"):
-                raise RuntimeError("已被用户终止")
-            return _get_engine().run(path)
-
-        self.run = engine_run
 
         def _spawn_inline(args, op: str = "") -> None:
             tgt = getattr(args, "video", None) or getattr(args, "work", None)
@@ -454,10 +746,18 @@ class _Home:
                     line = _sanitize(p.decode("utf-8", "replace").strip())
                     if line:
                         j["line"] = line
+                        _log(f"[{j.get('label') or j.get('desc') or '子进程'}] {line}")
                         if j.get("show"):
                             lines = j.setdefault("lines", [])
                             lines.append(line)
                             del lines[:-200]
+
+        def _cancel_grace_quit():
+            """取消 pagehide 触发的延迟退出(页面刷新后仍存活)。"""
+            t = getattr(home, "grace_t", None)
+            if t is not None:
+                t.cancel()
+                home.grace_t = None
 
         def spawn(
             desc: str,
@@ -467,6 +767,9 @@ class _Home:
             show: bool = False,
         ) -> int:
             """kind: long=长任务等退出; launch=启动型(编辑/打码,常驻),立即标完成。"""
+            import shlex
+
+            _log(f"启动子进程[{kind}]{f' {label}' if label else ''}:{shlex.join(cmd)}")
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -498,6 +801,30 @@ class _Home:
                 }
             home.jobs.append(j)
             threading.Thread(target=_pump, args=(proc, j), daemon=True).start()
+            if kind == "launch":
+                # 编辑/打码等窗口进程:其页面关闭(进程退出)时整个程序一并退出
+                def _watch(p=proc):
+                    code = p.wait()
+                    if getattr(home, "quitting", False) or getattr(home, "grace_t", None):
+                        return  # 程序已在退出流程中
+                    if code != 0:
+                        j["st"] = "fail"
+                        if not str(j.get("line", "")).strip():
+                            j["line"] = f"异常退出(code={code})"
+                        _log(f"窗口进程异常退出(code={code}),主页保持运行:{desc}")
+                        return  # 报错退出≠关闭页面,不联动退出
+                    _log(f"窗口进程退出,程序结束:{desc}")
+                    home.quitting = True
+                    for jj in home.jobs:
+                        pp = jj.get("proc")
+                        if pp and pp is not p and pp.poll() is None:
+                            _kill_tree(pp)
+                    try:
+                        home.srv.shutdown()
+                    except Exception:  # noqa: BLE001
+                        os._exit(0)
+
+                threading.Thread(target=_watch, daemon=True).start()
             return len(home.jobs) - 1
 
         self.spawn = spawn
@@ -506,24 +833,14 @@ class _Home:
             def log_message(self, *a):
                 pass
 
-            def _json(self, obj):
-                body = json.dumps(obj, ensure_ascii=False).encode()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
             def do_GET(self):
+                _cancel_grace_quit()  # 有新请求(如刷新后的首个请求)则取消延迟退出
                 if self.path == "/":
-                    body = _PAGE.encode()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    utils.http_page(self, _PAGE)
+                elif self.path.startswith("/ping"):  # 心跳:页面据此检测程序是否已退出
+                    utils.http_json(self, {})
                 elif self.path == "/list":
-                    self._json({"items": _scan_output(home.root)})
+                    utils.http_json(self, {"items": _scan_output_cached(home)})
                 elif self.path.startswith("/upload-video"):
                     # 原生文件对话框选中的视频上传到临时目录(同打码选图片机制)
                     import tempfile
@@ -532,7 +849,7 @@ class _Home:
                     q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
                     name = Path(q.get("name", ["video.mp4"])[0].replace("\\", "/")).name
                     if Path(name).suffix.lower() not in VID_EXTS:
-                        self._json({"ok": False, "err": f"不是视频文件:{name}"})
+                        utils.http_json(self, {"ok": False, "err": f"不是视频文件:{name}"})
                         return
                     d = Path(tempfile.gettempdir()) / "jpsub_home_vid"
                     d.mkdir(exist_ok=True)
@@ -547,9 +864,101 @@ class _Home:
                                     break
                                 fp.write(chunk)
                                 rem -= len(chunk)
-                        self._json({"ok": True, "path": str(dst)})
+                        utils.http_json(self, {"ok": True, "path": str(dst)})
                     except Exception as e:  # noqa: BLE001
-                        self._json({"ok": False, "err": str(e)})
+                        utils.http_json(self, {"ok": False, "err": str(e)})
+                elif self.path.startswith("/crop-meta?"):
+                    # 字幕区选择器元数据:视频尺寸/时长 + 已保存的 crop 参数
+                    import urllib.parse
+
+                    name = str(
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(self.path).query
+                        ).get("name", [""])[0]
+                    )
+                    work = _work_of_name(home.root, name)
+                    video = _named_video(home.root, name)
+                    if not name or video is None:
+                        utils.http_json(self, {"ok": False, "err": "该条目没有视频文件"})
+                        return
+                    from .mask import video_duration, video_size
+
+                    try:
+                        vw, vh = video_size(video)
+                        dur = video_duration(video)
+                    except Exception as e:  # noqa: BLE001
+                        utils.http_json(self, {"ok": False, "err": f"读取视频信息失败:{e}"})
+                        return
+                    utils.http_json(self, 
+                        {
+                            "ok": True,
+                            "vw": vw,
+                            "vh": vh,
+                            "dur": dur,
+                            "crop": cli._read_crop(work) if work.is_dir() else None,
+                        }
+                    )
+                elif self.path.startswith("/crop-frame?"):
+                    # 字幕区选择器取帧:ffmpeg 抽指定时刻整帧 JPEG
+                    import urllib.parse
+
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    name = q.get("name", [""])[0]
+                    video = _named_video(home.root, name)
+                    if video is None:
+                        self.send_error(404)
+                        return
+                    from .mask import frame_jpeg
+
+                    try:
+                        data = frame_jpeg(video, float(q.get("t", ["0"])[0]))
+                    except Exception:  # noqa: BLE001
+                        self.send_error(500)
+                        return
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                elif self.path.startswith("/info?"):
+                    # 复制info:读工作目录 info.txt 返回给前端复制到剪贴板(不含标签行)
+                    import urllib.parse
+
+                    name = str(
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(self.path).query
+                        ).get("name", [""])[0]
+                    )
+                    fp = _work_of_name(home.root, name) / "info.txt"
+                    if not name or not fp.is_file():
+                        utils.http_json(self, {"ok": False, "err": "工作目录没有 info.txt"})
+                        return
+                    text = "\n".join(
+                        ln
+                        for ln in fp.read_text(encoding="utf-8").splitlines()
+                        if not ln.startswith("标签:")
+                    )
+                    utils.http_json(self, {"ok": True, "text": text})
+                elif self.path.startswith("/tags?"):
+                    # 复制tag:解析 info.txt 的「标签:」行,返回 tag 列表
+                    import urllib.parse
+
+                    name = str(
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(self.path).query
+                        ).get("name", [""])[0]
+                    )
+                    fp = _work_of_name(home.root, name) / "info.txt"
+                    tags: list[str] = []
+                    if name and fp.is_file():
+                        for ln in fp.read_text(encoding="utf-8").splitlines():
+                            if ln.startswith("标签:"):
+                                tags = [
+                                    t.strip()
+                                    for t in ln.partition("标签:")[2].split(",")
+                                    if t.strip()
+                                ]
+                    utils.http_json(self, {"ok": True, "tags": tags})
                 elif self.path == "/jobs":
                     for j in home.jobs:
                         if (
@@ -558,7 +967,11 @@ class _Home:
                             and j["proc"].poll() is not None
                         ):
                             j["st"] = "done" if j["proc"].returncode == 0 else "fail"
-                    self._json(
+                            _log(
+                                f"子进程结束:{j.get('label') or j.get('desc')}"
+                                f" -> {j['st']}(退出码 {j['proc'].returncode})"
+                            )
+                    utils.http_json(self, 
                         {
                             "n": len(home.jobs),
                             "jobs": [
@@ -581,8 +994,10 @@ class _Home:
             def do_POST(self):
                 import shlex
 
+                _cancel_grace_quit()  # 有新请求(如刷新后的首个请求)则取消延迟退出
                 n = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(n) or b"{}")
+                _log(f"操作 {self.path}:{body if body else ''}")
                 exe = [sys.executable, "-m", "jpsub.cli"]
 
                 def extra() -> list[str]:
@@ -603,36 +1018,101 @@ class _Home:
                             sp.Popen(["open", str(home.root)])
                         else:
                             sp.Popen(["xdg-open", str(home.root)])
-                        self._json({"ok": True})
+                        utils.http_json(self, {"ok": True})
                     elif self.path == "/del":
                         name = str(body.get("name", "")).strip()
-                        work = home.root / (name + ".jpsub")
+                        work = _work_of_name(home.root, name)
                         if not name or not work.is_dir():
-                            self._json({"ok": False, "err": "工作目录不存在"})
+                            utils.http_json(self, {"ok": False, "err": "工作目录不存在"})
                             return
                         import shutil
 
                         shutil.rmtree(work)
-                        self._json({"ok": True})
+                        # 连带清理:根目录散落的同名视频文件,什么都不留
+                        for ext in VID_EXTS:
+                            v = home.root / (name + ext)
+                            if v.is_file():
+                                v.unlink()
+                        utils.http_json(self, {"ok": True})
+                    elif self.path == "/delvid":
+                        # 删除选定工作目录里的视频文件,保留字幕等其余文件
+                        name = str(body.get("name", "")).strip()
+                        work = _work_of_name(home.root, name)
+                        n = 0
+                        for ext in VID_EXTS:
+                            v = work / (name + ext)
+                            if v.is_file():
+                                v.unlink()
+                                n += 1
+                        if n == 0:
+                            utils.http_json(self, {"ok": False, "err": "没找到视频文件"})
+                            return
+                        utils.http_json(self, {"ok": True, "n": n})
                     elif self.path == "/kill":
                         idx = int(body.get("idx", -1))
                         if not 0 <= idx < len(home.jobs):
-                            self._json({"ok": False, "err": "请先在 ④ 选中一个任务"})
+                            utils.http_json(self, {"ok": False, "err": "请先在 ④ 选中一个任务"})
                             return
                         j = home.jobs[idx]
                         if j["proc"] is None:  # 内联任务:排队/运行中打取消标记
                             j["cancel"] = True
-                            self._json({"ok": True, "note": "将在下一个 OCR 阶段终止"})
+                            utils.http_json(self, {"ok": True, "note": "将在下一个 OCR 阶段终止"})
                             return
                         if j["proc"].poll() is not None:
-                            self._json({"ok": False, "err": "该任务已结束"})
+                            utils.http_json(self, {"ok": False, "err": "该任务已结束"})
                             return
                         _kill_tree(j["proc"])  # 连 yt-dlp 等子孙进程一起终止
-                        self._json({"ok": True})
+                        utils.http_json(self, {"ok": True})
+                    elif self.path == "/crop-save":
+                        # 保存/清除选中条目的字幕区参数(工作目录 crop.json)
+                        name = str(body.get("name", "")).strip()
+                        work = _work_of_name(home.root, name)
+                        if not name or not work.is_dir():
+                            utils.http_json(self, {"ok": False, "err": "工作目录不存在,请先抽取"})
+                            return
+                        crop = body.get("crop")
+                        cf = handoff.crop_path(work)
+                        if crop:
+                            cf.parent.mkdir(parents=True, exist_ok=True)
+                            cf.write_text(
+                                json.dumps({"crop": str(crop)}, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                        elif cf.exists():
+                            cf.unlink()
+                        utils.http_json(self, {"ok": True})
+                    elif self.path == "/quit":
+                        utils.http_json(self, {"ok": True})
+                        if n == 0:
+                            # pagehide beacon(空 body):页面关闭/刷新时发出;
+                            # 延迟 2 秒退出,期间有新请求(刷新后的加载)则取消
+
+                            def _grace():
+                                try:
+                                    home.srv.shutdown()
+                                except Exception:  # noqa: BLE001
+                                    os._exit(0)
+
+                            home.grace_t = threading.Timer(2.0, _grace)
+                            home.grace_t.start()
+                        else:
+                            # 网页「退出程序」按钮:延迟退出避免连接中断报错;先终止所有
+                            # 存活子进程(编辑/打码是独立子进程,不杀会残留),os._exit 连内联任务一起终止
+                            home.quitting = True
+
+                            def _quit_all():
+                                for j in home.jobs:
+                                    if j["proc"] is not None and j["proc"].poll() is None:
+                                        _kill_tree(j["proc"])
+                                home.srv.shutdown()
+                                home.srv.server_close()
+                                os._exit(0)
+
+                            threading.Timer(0.3, _quit_all).start()
                     elif self.path == "/script":
                         text = str(body.get("text", ""))
                         if not text.strip():
-                            self._json({"ok": False, "err": "脚本为空"})
+                            utils.http_json(self, {"ok": False, "err": "脚本为空"})
                             return
                         path = home.root / ".home-batch.txt"
                         path.write_text(text, encoding="utf-8")
@@ -642,7 +1122,7 @@ class _Home:
                             label="批量脚本",
                             show=True,
                         )
-                        self._json({"ok": True})
+                        utils.http_json(self, {"ok": True})
                     elif self.path == "/runcmd":
                         # 一次性自定义命令:整条命令 = jpsub 子命令 + 参数
                         import shlex as _shlex
@@ -651,10 +1131,10 @@ class _Home:
                         try:
                             toks = _shlex.split(text)
                         except ValueError as e:
-                            self._json({"ok": False, "err": f"命令解析失败:{e}"})
+                            utils.http_json(self, {"ok": False, "err": f"命令解析失败:{e}"})
                             return
                         if not toks:
-                            self._json({"ok": False, "err": "命令为空"})
+                            utils.http_json(self, {"ok": False, "err": "命令为空"})
                             return
                         home.spawn(
                             " ".join(toks[:2]),
@@ -662,26 +1142,19 @@ class _Home:
                             label=" ".join(toks[:2]),
                             show=True,  # 输出保留到任务输出区
                         )
-                        self._json({"ok": True})
+                        utils.http_json(self, {"ok": True})
                     elif self.path == "/cmd":
                         # 通用子命令入口:{sub, flags[], url, path, name}
                         sub = str(body.get("sub", "")).strip()
                         flags = [str(f) for f in body.get("flags", [])]
                         url = str(body.get("url", "")).strip()
                         name = str(body.get("name", "")).strip()
-                        work = home.root / (name + ".jpsub")
-                        video = home.root / name
-                        for base in (work, home.root):  # 新布局优先,旧布局回退
-                            for ext in VID_EXTS:
-                                if (base / (name + ext)).exists():
-                                    video = base / (name + ext)
-                                    break
-                            if video.is_file():
-                                break
+                        video = _named_video(home.root, name) or home.root / name
+                        work = _work_of_name(home.root, name)
 
                         def need(cond: bool, err: str) -> bool:
                             if not cond:
-                                self._json({"ok": False, "err": err})
+                                utils.http_json(self, {"ok": False, "err": err})
                                 return False
                             return True
 
@@ -711,15 +1184,7 @@ class _Home:
                                     name = v
                                 if p is None:
                                     name = name or str(body.get("name", "")).strip()
-                                    w2 = home.root / (name + ".jpsub")
-                                    for base in (w2, home.root):
-                                        for ext in VID_EXTS:
-                                            cand = base / (name + ext)
-                                            if cand.is_file():
-                                                p = cand
-                                                break
-                                        if p:
-                                            break
+                                    p = _named_video(home.root, name)
                                 if not need(
                                     p is not None,
                                     "请先在 ① 选择视频,或在 ② 选中条目",
@@ -742,10 +1207,7 @@ class _Home:
                         elif sub in ("mask", "maskapply", "burn"):
                             if not need(video.is_file(), "请先在 ② 选择有视频的条目"):
                                 return
-                            if sub == "burn" and (
-                                (work / "masks.json").is_file()
-                                or (work / "masks.txt").is_file()
-                            ):
+                            if sub == "burn" and handoff.masks_path(work).is_file():
                                 # 链式:工作目录里有打码清单 → 先打码再烧字幕
                                 pre = ["maskapply", str(video), "--burn"]
                                 op = "打码+烧录"
@@ -761,22 +1223,15 @@ class _Home:
                                 label=f"{name} {op}",
                             )
                         else:
-                            self._json({"ok": False, "err": f"未知子命令:{sub}"})
+                            utils.http_json(self, {"ok": False, "err": f"未知子命令:{sub}"})
                             return
-                        self._json({"ok": True})
+                        utils.http_json(self, {"ok": True})
                     else:
                         self.send_error(404)
                 except Exception as e:  # noqa: BLE001
-                    self._json({"ok": False, "err": str(e)})
+                    utils.http_json(self, {"ok": False, "err": str(e)})
 
-        for p in range(8790, 8800):
-            try:
-                self.srv = ThreadingHTTPServer(("127.0.0.1", p), H)
-                break
-            except OSError:
-                continue
-        else:
-            raise SystemExit("错误:8790~8799 端口都被占用")
+        self.srv = utils.pick_server(H, range(8790, 8800))
 
 
 def home_page(root: Path | None = None) -> None:
@@ -784,10 +1239,18 @@ def home_page(root: Path | None = None) -> None:
     root = root or cli._output_root()
     root.mkdir(parents=True, exist_ok=True)
     h = _Home(root)
-    url = f"http://127.0.0.1:{h.srv.server_address[1]}/"
+    url = utils.open_browser(h.srv)
     print(f"jpsub 主页:{url}(浏览器未自动打开时手动访问;Ctrl+C 退出)")
-    threading.Timer(0.3, lambda: webbrowser.open(url)).start()
     try:
         h.srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        h._log("主页退出")
+        for j in h.jobs:  # home 退出时把还挂着的 edit/mask 等启动型子进程一并带走
+            proc = j.get("proc")
+            if proc and proc.poll() is None:
+                try:
+                    _kill_tree(proc)
+                except Exception:  # noqa: BLE001
+                    pass

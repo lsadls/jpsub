@@ -1,4 +1,4 @@
-"""通过 yt-dlp 下载 niconico 视频(走代理)。
+"""通过 yt-dlp 下载 niconico / YouTube 视频(走代理)。
 
 流程:提取视频 id -> 用 yt-dlp 列出格式 -> 选分辨率/大小最小的含视频流格式 -> 下载到目标目录。
 """
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -14,7 +15,24 @@ from . import settings
 
 WATCH_RE = re.compile(r"(?:https?://(?:www\.)?nicovideo\.jp/watch/)?(sm\d+)", re.I)
 
+_YT_RE = re.compile(r"(?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch|shorts|live)|youtu\.be/)", re.I)
+
+
+def is_youtube(url: str) -> bool:
+    return bool(_YT_RE.search(url.strip()))
+
+
 _ILLEGAL = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+# 常见网盘/文件分享域名,出现在简介行内则整行剔除(避免 B 站审核应激)
+_NETDISK_RE = re.compile(
+    r"(mega\.nz|drive\.google|docs\.google\.com|dropbox\.com|pan\.baidu\.com"
+    r"|1drv\.ms|onedrive\.live|mediafire|pixeldrain|gofile\.io|catbox\.moe"
+    r"|0x0\.st|gigafile\.nu|firestorage|getuploader|fastlist"
+    r"|disk\.yandex|transfer\.sh|wetransfer|send\.space|file\.io|anonfiles"
+    r"|krakenfiles|bagi\.co\.in|tmpfiles\.org|litterbox|pomf\.se|uguu\.se)",
+    re.I,
+)
 
 
 def _safe_title(info: dict, fallback: str) -> str:
@@ -29,6 +47,15 @@ def _safe_title(info: dict, fallback: str) -> str:
 def extract_video_id(text: str) -> str | None:
     """从 URL 或裸 id(如 sm43168834)中提取视频 id。"""
     m = WATCH_RE.match(text.strip())
+    return m.group(1) if m else None
+
+
+def _known_id(url: str) -> str | None:
+    """从 URL 粗提取视频 id(nico 的 sm 号或 YouTube 的视频 id),用于跳过下载检查。"""
+    vid = extract_video_id(url)
+    if vid:
+        return vid
+    m = re.search(r"(?:v=|youtu\.be/|shorts/|live/)([\w-]{6,})", url)
     return m.group(1) if m else None
 
 
@@ -48,6 +75,18 @@ def _ffmpeg_args() -> list[str]:
     return ["--ffmpeg-location", str(bin_path.resolve())]
 
 
+def _net_args() -> list[str]:
+    """提高下载并发:分片流开 32 并发;装了 aria2c 则用它多连接下载,吃满带宽。"""
+    args = ["--concurrent-fragments", "32"]
+    aria2 = shutil.which("aria2c")
+    if aria2:
+        args += [
+            "--downloader", aria2,
+            "--downloader-args", "aria2c:-x 32 -s 32 -k 1M --file-allocation=none",
+        ]
+    return args
+
+
 def _cookies_args() -> list[str]:
     return (
         ["--cookies-from-browser", settings.COOKIES_FROM_BROWSER]
@@ -65,7 +104,7 @@ def _run_ytdlp(
     按当前目标文件名区分视频/音频流,回调形如 progress("视频 43%")。
     失败时把 stderr 抛出。
     """
-    cmd = [settings.binary("yt-dlp"), *_ffmpeg_args(), *_cookies_args(), *_proxy_args(), *args]
+    cmd = [settings.binary("yt-dlp"), *_ffmpeg_args(), *_net_args(), *_cookies_args(), *_proxy_args(), *args]
     if not quiet:
         return subprocess.run(cmd, check=check)
     if progress:
@@ -73,14 +112,18 @@ def _run_ytdlp(
     import tempfile
 
     stream = ""  # 当前下载的流:"视频"/"音频"(双流按 Destination 行切换)
+    dest_n = 0  # 双流时第 1 个 Destination 为视频、第 2 个为音频(YouTube 用数字格式 id)
     with tempfile.TemporaryFile("w+") as errf:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True)
         for line in p.stdout:
             if "[download] Destination:" in line:
+                dest_n += 1
                 if ".fvideo" in line:
                     stream = "视频"
                 elif ".faudio" in line:
                     stream = "音频"
+                else:
+                    stream = "视频" if dest_n == 1 else "音频"
             if progress:
                 m = re.search(r"\[download\]\s+([\d.]+)%", line)
                 if m:
@@ -90,6 +133,34 @@ def _run_ytdlp(
             errf.seek(0)
             raise SystemExit(f"yt-dlp 下载失败:\n{errf.read().strip()}")
         return subprocess.CompletedProcess(cmd, p.returncode)
+
+
+def _load_glossary() -> dict[str, str]:
+    """加载项目根目录 glossary.txt(简介/tag 文本替换用);不存在则返回空。"""
+    p = Path(__file__).resolve().parent.parent / "glossary.txt"
+    if not p.is_file():
+        return {}
+    gloss: dict[str, str] = {}
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        k, sep, v = ln.partition("\t")
+        if not sep:
+            k, _, v = ln.partition(" ")
+        k, v = k.strip(), v.strip()
+        if k and v:
+            gloss[k] = v
+    return gloss
+
+
+def glossary_sub(text: str) -> str:
+    """按名词对照表替换文本(长词优先),无表时原样返回。"""
+    gloss = _load_glossary()
+    for k in sorted(gloss, key=len, reverse=True):
+        if k in text:
+            text = text.replace(k, gloss[k])
+    return text
 
 
 def _extract_info(url: str) -> dict:
@@ -158,6 +229,20 @@ def _pick_formats(info: dict) -> tuple[dict | None, dict | None]:
     return video, audio
 
 
+def _yt_fmt_expr() -> str:
+    """YouTube 的 yt-dlp 格式选择表达式(按 NICO_VIDEO_QUALITY 映射分辨率上限)。"""
+    q = settings.NICO_VIDEO_QUALITY
+    if q == "best":
+        return "bestvideo*+bestaudio/best"
+    if q == "lowest":
+        return "worstvideo*+worstaudio/worst"
+    try:
+        h = int(str(q).rstrip("pP"))
+    except ValueError:
+        raise SystemExit(f"错误:NICO_VIDEO_QUALITY 无法识别:{q!r}(应为 lowest/best/360p/480p/720p)")
+    return f"bestvideo*[height<={h}]+bestaudio/best[height<={h}]/best"
+
+
 def download(
     url: str,
     out_dir: Path,
@@ -168,8 +253,8 @@ def download(
 ) -> Path:
     """下载视频(按 settings.NICO_VIDEO_QUALITY/NICO_AUDIO_QUALITY)并合并,返回视频文件路径。
 
-    视频保存到 out_dir/<标题>.jpsub/ 工作目录内,以视频名命名;
-    comment 为视频描述,写入工作目录 comment.txt 供翻译提示使用。
+    视频保存到 out_dir/<标题>_<视频id> 工作目录内;
+    comment 为视频描述,写入工作目录 .jpsub/comment.txt 供翻译提示使用。
     quiet=True 时不打印任何过程信息(批量模式由状态板统一展示);
     quiet 下 progress("视频 43%"/"音频 88%") 回调双流下载进度。
     """
@@ -178,43 +263,122 @@ def download(
         if not quiet:
             print(msg)
     vid = extract_video_id(url)
-    if vid and not url.lower().startswith("http"):
+    yt = is_youtube(url)
+    if vid and not yt and not url.lower().startswith("http"):
         url = f"https://www.nicovideo.jp/watch/{vid}"
 
+    # 三件套(视频+info.txt+cover.jpg)齐全则整体跳过下载
+    kid = _known_id(url)
+    if kid and out_dir.is_dir():
+        for d in out_dir.glob(f"*_{kid}"):
+            if not d.is_dir():
+                continue
+            done = next(
+                (p for p in d.iterdir() if p.is_file() and p.suffix.lower() in (".mp4", ".mkv", ".webm")),
+                None,
+            )
+            if done and (d / "info.txt").is_file() and (d / "cover.jpg").is_file():
+                _say(f"已完整,跳过下载:{done}")
+                return done
+
     info = _extract_info(url)
-    video, audio = _pick_formats(info)
+    if yt:
+        fmt = _yt_fmt_expr()
+        _say(f"选定格式:{fmt}")
+    else:
+        video, audio = _pick_formats(info)
+        if audio:
+            fmt = f"{video['format_id']}+{audio['format_id']}"
+            _say(
+                f"选定格式:{video['format_id']}({video.get('height')}p)"
+                f" + {audio['format_id']}({audio.get('abr')}kbps)"
+            )
+        else:
+            fmt = video["format_id"]
+            _say(f"选定格式:{fmt}(无独立音频流)")
     vid = info.get("id", "video")
     name = _safe_title(info, vid)
-    if audio:
-        fmt = f"{video['format_id']}+{audio['format_id']}"
-        _say(
-            f"选定格式:{video['format_id']}({video.get('height')}p)"
-            f" + {audio['format_id']}({audio.get('abr')}kbps)"
-        )
-    else:
-        fmt = video["format_id"]
-        _say(f"选定格式:{fmt}(无独立音频流)")
-    work_dir = out_dir / f"{name}.jpsub"  # 视频直接下进工作目录(新布局)
+    # 工作目录:<标题>_<视频id> 防重名
+    work_dir = out_dir / f"{name}_{vid}"
     out_dir.mkdir(parents=True, exist_ok=True)
     # 标题里的 % 会破坏 -o 占位符模板,模板中需转义为 %%
-    _run_ytdlp([
-        "-f", fmt,
-        "--merge-output-format", "mp4",
-        "-o", str(work_dir / f"{name.replace('%', '%%')}.%(ext)s"),
-        "--no-warnings",
-        url,
-    ], quiet=quiet, progress=progress)
     # 只匹配文件(排除子目录),优先视频扩展名
     out_file = next(
         (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(work_dir.glob(f"{name}{ext}"))),
         None,
-    ) or next((p for p in work_dir.glob(f"{name}.*") if p.is_file()), None)
+    )
     if out_file is None:
-        raise SystemExit(f"错误:下载后未找到 {work_dir}/{name}.*")
+        _run_ytdlp([
+            "-f", fmt,
+            "--merge-output-format", "mp4",
+            "-o", str(work_dir / f"{name.replace('%', '%%')}.%(ext)s"),
+            "--no-warnings",
+            url,
+        ], quiet=quiet, progress=progress)
+        out_file = next(
+            (p for ext in (".mp4", ".mkv", ".webm") for p in sorted(work_dir.glob(f"{name}{ext}"))),
+            None,
+        ) or next((p for p in work_dir.glob(f"{name}.*") if p.is_file()), None)
+        if out_file is None:
+            raise SystemExit(f"错误:下载后未找到 {work_dir}/{name}.*")
+    # 写视频元信息,供翻译参考;剔除网盘/外部下载链接避免 B 站审核问题
+    _date = info.get("upload_date") or ""
+    _date = f"{_date[:4]}-{_date[4:6]}-{_date[6:8]}" if len(_date) == 8 else ""
+    desc = glossary_sub(
+        "\n".join(
+            line for line in (info.get("description") or "").splitlines()
+            if not _NETDISK_RE.search(line)
+        ).strip()
+    )
+    tags = ", ".join(info.get("tags") or [])
+    tags = glossary_sub(tags)
+    info_path = out_file.parent / "info.txt"
+
+    class _SafeDict(dict):  # 未知占位符原样保留,避免自定义模板 KeyError
+        def __missing__(self, k):
+            return "{" + k + "}"
+
+    # info 里的 URL 去掉跟踪参数:niconico 取干净 watch 链接,YouTube 只保留 v=
+    if vid.lower().startswith(("sm", "nm")):
+        clean_url = f"https://www.nicovideo.jp/watch/{vid}"
+    else:
+        from urllib.parse import parse_qs, urlencode, urlparse
+
+        _u = urlparse(info.get("webpage_url") or url)
+        _q = {k: v[-1] for k, v in parse_qs(_u.query).items() if k in ("v",)}
+        clean_url = _u._replace(query=urlencode(_q)).geturl()
+    if not info_path.exists():
+        info_path.write_text(
+            settings.INFO_TEMPLATE.format_map(
+                _SafeDict(
+                    url=clean_url,
+                    title=info.get("title") or "",
+                    uploader=info.get("uploader") or info.get("channel") or "",
+                    date=_date,
+                    description=desc,
+                    tags=tags,
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     if comment:
-        comment_path = out_file.parent / "comment.txt"
+        from . import handoff
+
+        comment_path = handoff.comment_path(work_dir)
         comment_path.parent.mkdir(parents=True, exist_ok=True)
         comment_path.write_text(comment, encoding="utf-8")
         _say(f"视频描述:{comment} -> {comment_path}")
+    cover = out_file.parent / "cover.jpg"
+    if not cover.exists() and (info.get("thumbnail") or "").startswith("http"):
+        try:  # 封面下载失败不影响主流程
+            import urllib.request
+
+            req = urllib.request.Request(info["thumbnail"], headers={"User-Agent": "Mozilla/5.0"})
+            data = urllib.request.urlopen(req, timeout=30).read()
+            cover.write_bytes(data)
+            _say(f"封面:{cover}")
+        except Exception as e:  # noqa: BLE001
+            _say(f"封面下载失败(忽略):{e}")
     _say(f"下载完成:{out_file}")
     return out_file

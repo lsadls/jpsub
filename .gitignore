@@ -5,11 +5,12 @@ __pycache__/
 output/
 models/
 .trae/
-project.md
 /settings.py
 bin/
 yt-dlp.exe
-.hf-cache/
 archive/
 .vscode/
-/ass/
+ass/
+todo.md
+logs/
+.python-version

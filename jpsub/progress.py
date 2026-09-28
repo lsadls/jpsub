@@ -46,3 +46,25 @@ class LineCapture:
 
     def flush(self) -> None:
         pass
+
+
+class Reporter:
+    """各流水线阶段共用的单行进度输出(三态合一):
+    - on_line 给定(GUI/主页):每行文本回调给上层展示;
+    - 否则 quiet=True 静默、quiet=False 终端 \\r 原地刷新(不刷屏)。
+    close() 完成后换行,让后续输出另起一行。
+    """
+
+    def __init__(self, *, on_line=None, quiet: bool = False):
+        self.on_line = on_line
+        self.quiet = quiet
+
+    def line(self, text: str) -> None:
+        if self.on_line is not None:
+            self.on_line(text)
+        elif not self.quiet:
+            print(f"\r{text}  ", end="", flush=True)  # 尾部补空格盖掉上一行残留
+
+    def close(self) -> None:
+        if not self.quiet:
+            print()

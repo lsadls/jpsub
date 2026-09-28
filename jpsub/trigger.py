@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageChops, ImageStat
 
 from .frames import mask_diff
@@ -39,6 +40,21 @@ def _removed_stats(prev: Image.Image, cur: Image.Image) -> tuple[float, float]:
         return 0.0, 0.0
     removed = ImageStat.Stat(ImageChops.subtract(prev, cur)).mean[0]
     return removed / base, removed
+
+
+def _overlap_ratio(prev: Image.Image, cur: Image.Image) -> float:
+    """两掩膜文字像素的交叠率:交集 / 较大一方的笔画总量(0-1)。
+
+    同一页字幕的两次截图文字几乎完全重合(动的只有小人动画等小区域),
+    交叠率高;真正换页时旧文字消失,交叠率低。
+    """
+    import numpy as np
+
+    a = np.asarray(prev) > 0
+    b = np.asarray(cur) > 0
+    inter = int((a & b).sum())
+    bigger = max(int(a.sum()), int(b.sum()))
+    return inter / bigger if bigger else 0.0
 
 
 def select_keyframes(
@@ -84,10 +100,20 @@ def select_keyframes(
         if changed[i]:
             if start is not None and ref is not None:
                 # 连续变化中的换段检测:前一帧的笔画大量消失(相对>=50% 且
-                # 绝对量可观,排除抽帧抖动)说明旧文字被替换——小段落一闪
-                # 而过、没有静止区也会在此断开,否则会被当成连续打字吞掉。
+                # 绝对量可观,排除抽帧抖动)且残字交叠极低(<35%,打字续写时
+                # 旧字仍在画面上,交叠不会这么低;雪粒/火花的噪声则两者皆高),
+                # 才判定旧文字被替换——否则视为打字续写继续本段,避免把同一句
+                # 的打字过程切成多段、浪费 OCR。
                 rel, abs_removed = _removed_stats(ref[i - 1], ref[i])
-                if rel >= 0.5 and abs_removed >= 1.5:
+                # 前帧掩膜过小(<800px)说明 ref 里几乎没有文字、只有雪粒/火花
+                # 之类的噪声:消失/交叠统计全是噪声,不可信,不在此切分。
+                prev_px = int((np.asarray(ref[i - 1]) > 0).sum())
+                if (
+                    rel >= 0.5
+                    and abs_removed >= 1.5
+                    and prev_px >= 800
+                    and _overlap_ratio(ref[i - 1], ref[i]) < 0.35
+                ):
                     key = cand if cand is not None else i - 1
                     spans.append((start, key, key))
                     start, cand, run = i, None, 0
@@ -135,13 +161,19 @@ def select_keyframes(
         # 事后合并:前段关键帧的文字若仍(近乎)完整出现在后段关键帧中
         # (消失笔画 < 20%),说明前段只是后段的"打字过程",并入后段;
         # 否则(旧字消失=换段)一律保留。
+        # 另一判据"交叠率":两关键帧文字像素的交集占比。字幕区内的小人动画/
+        # 装饰动画会持续触发差分,把同一页反复切段;但页面文字本身没变,像素
+        # 交集仍占大头(>=50%),据此合并——真换页时旧字消失,交集很小不合并。
         merged: list[tuple[int, int, int]] = []
         for s in spans:
             prev_key = ref[merged[-1][2]] if merged else None
             if (
                 prev_key is not None
                 and ImageStat.Stat(prev_key).mean[0] >= 0.5  # 空掩膜(纯色帧)不参与合并
-                and _removed_stats(prev_key, ref[s[2]])[0] < 0.2
+                and (
+                    _removed_stats(prev_key, ref[s[2]])[0] < 0.2
+                    or _overlap_ratio(prev_key, ref[s[2]]) >= 0.5
+                )
             ):
                 merged[-1] = (merged[-1][0], s[1], s[2])
             else:

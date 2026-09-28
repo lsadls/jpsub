@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -91,4 +92,31 @@ def build_segments(
                     cur.text = text
                 continue
         segments.append(Segment(start=t, end=t + frame_dur, text=text))
-    return merge_partial_duplicates(segments, frame_dur=frame_dur)
+    return merge_quote_continuations(
+        merge_partial_duplicates(segments, frame_dur=frame_dur),
+        frame_dur=frame_dur,
+    )
+
+
+def _quote_continues(prev: str, nxt: str) -> bool:
+    """prev 引号未闭合(「『 多于 」』)且 nxt 像同一句台词的下一行:
+    nxt 本身不开启新引号(新说话人),也不以句号收尾(旁白)。"""
+    if prev.count("「") + prev.count("『") <= prev.count("」") + prev.count("』"):
+        return False
+    if re.search(r"[「『]", nxt):
+        return False
+    return not nxt.endswith("。")
+
+
+def merge_quote_continuations(
+    segments: list[Segment], *, frame_dur: float
+) -> list[Segment]:
+    """时间相邻且引号不闭合的相邻段合并(打字式逐行出现的同一句台词)。"""
+    out: list[Segment] = []
+    for seg in segments:
+        if out and _quote_continues(out[-1].text, seg.text) and seg.start <= out[-1].end + frame_dur * 1.5:
+            out[-1].end = max(out[-1].end, seg.end)
+            out[-1].text += seg.text
+            continue
+        out.append(seg)
+    return out

@@ -13,7 +13,6 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
-import os
 import re
 import shlex
 import shutil
@@ -27,20 +26,24 @@ from multiprocessing import Manager
 from queue import Empty
 from pathlib import Path
 
+from . import handoff
+
 _NO_STAGE_A = ("translate", "render", "status")  # 只收 work 的子命令,无下载/抽帧
 
 
 def _parse_line(line: str):
     """把脚本一行解析成 args;裸 URL/视频 id 自动视为 download。"""
     from .cli import parse_args
-    from .download import extract_video_id
 
     tokens = shlex.split(line)
     for i, t in enumerate(tokens):  # 行内 # 注释:连同其后内容一并丢弃
         if t.startswith("#"):
             tokens = tokens[:i]
             break
-    if tokens and not tokens[0].startswith("-") and extract_video_id(tokens[0]):
+    known = {"extract", "render", "run", "status", "translate", "text",
+             "mask", "maskapply", "voice", "edit", "home", "download"}
+    if tokens and not (tokens[0] in known or tokens[0].startswith("-s")):
+        # 首个 token 不是子命令(裸 URL/视频 id/参数开头),自动视为 download
         tokens = ["download", *tokens]
     return parse_args(tokens)
 
@@ -56,10 +59,13 @@ def _save_preview_frames(ns, work: Path) -> int:
             paths, spans, _m, _c, _fd, _off = _select_keyframes(ns, tmp, quiet=True)
             saved = [paths[sp[2]] for sp in spans]
         else:
+            from .cli import apply_work_crop
+
+            apply_work_crop(ns)  # 工作目录里保存的字幕区参数优先
             saved = fr.extract_frames(
                 ns.video, tmp, fps=ns.fps, crop=ns.crop, start=ns.start, end=ns.end
             )
-        for stale in work.glob("frame_*.jpg"):
+        for stale in list(work.glob("frame_*.jpg")) + list(work.glob("frame_*.webp")):
             stale.unlink()
         for p in saved:
             shutil.copy2(p, work / p.name)
@@ -111,8 +117,6 @@ def _prepare(line: str, q=None):
 
             work = Path(getattr(ns, "work", None) or _work_of(video))
             ass_path = getattr(ns, "output", None) or _find_ass(work)
-            if not Path(ass_path).exists() and cmd == "download":
-                ass_path = video.with_suffix(".ass")  # 旧布局回退
             if Path(ass_path).exists():
                 from .cli import _burn
 
@@ -124,7 +128,7 @@ def _prepare(line: str, q=None):
         if getattr(ns, "extract_only", False) or getattr(ns, "selected_only", False):
             return line, ns, str(video), str(work), _save_preview_frames(ns, work), None
 
-        bdir = work / "_batch"
+        bdir = handoff.hidden_dir(work) / "_batch"
         bdir.mkdir(exist_ok=True)
         tmp = Path(tempfile.mkdtemp(prefix="jpsub_"))
         try:
@@ -252,8 +256,9 @@ def run_script(args) -> None:
     if not lines:
         raise SystemExit(f"错误:脚本文件为空 {script}")
     n = len(lines)
-    dl_workers = args.dl_workers or min(n, max(2, os.cpu_count() or 2))
-    tr_workers = args.tr_workers or min(4, n)
+    # 批量模式按任务数分配:任务多则并发多,重叠下载/抽帧/翻译让机器不闲着
+    dl_workers = args.dl_workers or n
+    tr_workers = args.tr_workers or n
     board = _Board(lines)
     board.event(
         f"批量模式:{n} 个任务(下载/筛选 {dl_workers} 进程,翻译 {tr_workers} 线程)"
@@ -301,7 +306,6 @@ def run_script(args) -> None:
                     from .cli import _make_engine, ocr_batch_stage
 
                     if engine is None:
-                        board.event("加载 OCR 模型...")
                         engine = _make_engine(ns)
                     meta = json.loads((Path(work) / "_batch" / "meta.json").read_text())
                     board.update(line, "OCR", f"0/{len(meta['frames'])} 帧")

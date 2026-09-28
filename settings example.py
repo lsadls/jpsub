@@ -16,16 +16,30 @@ NICO_VIDEO_QUALITY = "360p"
 # AUDIO:"lowest"=最低码率,"best"=最高码率, 一般只有64k/192k 两种
 NICO_AUDIO_QUALITY = "lowest"
 
-# OCR 模型(PaddleOCR PP-OCRv5 系列)
-# 可选 _mobile_ 或 _medium_;实测 medium 在普通剧场字幕检测和识别上提升很小,但速度慢得多. 如果默认模型不理想可尝试
-OCR_DET_MODEL = "PP-OCRv5_mobile_det"
-OCR_REC_MODEL = "PP-OCRv5_mobile_rec"
+# 在线 OCR:baidu(默认)或 openai(OpenAI 兼容视觉 API)
+OCR_PROVIDER = "baidu"
+BAIDU_OCR_API_KEY = (
+    ""  # 百度智能云 AK(https://console.bce.baidu.com/ai/#/ai/ocr/overview)
+)
+BAIDU_OCR_SECRET_KEY = ""  # 百度智能云 SK
+OCR_LANGUAGE = ""  # 百度 OCR 识别语言,留空自动用 SOURCE_LANG;SOURCE_LANG 本身就用百度简写(JAP=日语/ENG=英语等)
+# openai 引擎用(OCR_PROVIDER="openai" 时必填 OCR_MODEL,其余留空回退上面的 API_BASE/API_KEY)
+OCR_API_BASE = ""
+OCR_API_KEY = ""
+OCR_MODEL = ""  # 视觉模型名,如 "qwen-vl-plus"
 
 # ---------- 字幕生成参数 ----------
 
 # 抽帧:每秒抽几帧;CROP:截取视频底部高度的比例(字幕区域)
 FPS = 2.0
 CROP = "0.78:0.02:0.01:0.01"
+# --crop 快捷预设:--crop <键> 时实际使用对应值,如 --crop 1 -> 0.03:0.03:0.02:0.02
+# CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}
+
+# 标签快捷裁剪:info 标签含键时自动采用对应值(可为 CROP_PRESETS 的键或 crop 值)
+# TAG_CROP = {"拓也": "1"}
+# 标签自动长文:info 标签含任一关键词时翻译自动启用长文模式(--long);空 set=关闭
+# TAG_LONG = {"拓也"}
 
 # 关键帧筛选:掩膜差异阈值(越小越灵敏,漏段少但误判多);静止多少帧算停顿(越小越容易收尾);连续变化超过多少帧强制识别
 DIFF_THRESHOLD = 2.0
@@ -37,6 +51,11 @@ SIMILARITY = 0.85
 
 # 翻译:每次请求翻译的句数
 BATCH_SIZE = 10
+
+# 省 token:关闭推理模型思考(输出 token 降 80%);建议 "none" 或 "low"
+REASONING_EFFORT = "none"
+# 默认名词对照表路径,格式 每行"原文<空白>译文";工作目录 glossary.txt 与 --glossary 优先级更高
+GLOSSARY_FILE = "glossary.txt"
 
 # ASS 字幕样式(位置交给播放器默认处理)
 FONT = "Noto Sans CJK SC"  # 字体

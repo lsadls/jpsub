@@ -6,12 +6,11 @@ build-backend = "setuptools.build_meta"
 name = "jpsub"
 version = "0.3.0"
 description = "日语视频(底部短句 / 全屏打字机长文) -> 中文外挂 ASS 字幕(本地 OCR + 外部翻译)"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
+  "numpy>=1.26",
   "pysubs2>=1.9",
   "Pillow>=10",
-  "paddleocr>=3.7",
-  "paddlepaddle>=3.3",
   "tqdm>=4",
 ]
 

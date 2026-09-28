@@ -12,9 +12,30 @@ import time
 import urllib.request
 
 from . import settings
+from .progress import Reporter
 
-# SKILL.md 简化版系统提示词
-SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句翻译为简体中文。
+def system_prompt(src: str | None = None, tgt: str | None = None, prompt_file: str | None = None) -> str:
+    """生成系统提示词:优先读 prompt_file(settings.PROMPT_FILE / --prompt 参数),
+    文件里可用 {src}/{tgt}/{punct} 占位符;否则用内置默认。"""
+    src = settings.lang_name(src or settings.SOURCE_LANG)
+    tgt = tgt or settings.TARGET_LANG
+    zh_out = "中" in tgt  # 中文目标语才强制全角标点
+    punct = (
+        "- 标点一律用中文全角:?!,省略号用「……」,不要出现半角 ? ! 或「......」\n"
+        if zh_out
+        else ""
+    )
+    path = prompt_file or settings.PROMPT_FILE
+    if path:
+        from pathlib import Path
+        p = Path(path)
+        if not p.is_absolute():
+            # 相对路径优先按当前工作目录找,找不到则回退到项目根目录
+            root = Path(__file__).resolve().parent.parent
+            p = root / p
+        tpl = p.read_text(encoding="utf-8")
+        return tpl.replace("{src}", src).replace("{tgt}", tgt).replace("{punct}", punct)
+    return f"""你是{src}字幕翻译,把用户提供的{src}字幕逐句翻译为{tgt}。
 
 背景:视频是日本例区文化(如淫梦文化)的二次创作(如 BB 剧场),注意例区用语、
 网络梗和人物绰号的既定译法,同一专有名词全篇译法一致。人名和专有名词周围加空格,输出里连续的省略号不能超过两个, 对错位/缺失的符号自动修正/补全
@@ -22,13 +43,14 @@ SYSTEM_PROMPT = """你是日语字幕翻译,把用户提供的日文字幕逐句
 规则:
 - 忠实原意,语气自然简洁,不添油加醋、不省略信息;
 - 保留「」、感叹号、破折号等语气标记;
-- 惯用语/俗语按中文习惯意译,不逐字直译;
+- 惯用语/俗语按{tgt}习惯意译,不逐字直译;
 - 注意隐含的说话对象与语气功能(安慰、吐槽、反问等);
-- 只输出译文,不要日文原文、不要注音、不要解释
+- 只输出译文,不要{src}原文、不要注音、不要解释
 - 不要思考人物关系或故事情节等, 只思考翻译。
-
-输出格式:与输入逐行对应,每行输出一句简体中文译文,不写编号、
-不写原文、不解释,必须覆盖输入的所有行,行序与输入一致。"""
+{punct}
+输出格式:输入每行开头是一个数字编号,输出与输入逐行对应,每行以相同编号开头
+(数字后接译文),编号与输入一致、不许跳过任何一行(看不懂的乱码句也要给编号并尽量音译),
+不写原文、不解释,行序与输入一致。"""
 
 # 额度/余额耗尽类错误的特征(中英文),命中则不重试、直接终止并提醒用户
 _QUOTA_PATTERNS = (
@@ -49,6 +71,17 @@ def _is_quota_error(err: Exception) -> bool:
     return any(p.lower() in text for p in _QUOTA_PATTERNS)
 
 
+def _norm_punct(s: str) -> str:
+    """译文标点规范化:省略号统一「……」,中文/全角字符后的半角标点转全角。"""
+    s = re.sub(r"\.{3,}", "……", s)
+    s = re.sub(
+        r"(?<=[\u3000-\u9fff\uff00-\uffef「」『』—…·])([,!?;:~])",
+        lambda m: {",": "，", "!": "！", "?": "？", ";": "；", ":": "：", "~": "～"}[m.group()],
+        s,
+    )
+    return s
+
+
 # 内容审查拦截的特征(英文/中文),命中则本批整批失败,单句问题会连累同批其他句
 _CENSOR_PATTERNS = (
     "data_inspection_failed",
@@ -66,6 +99,10 @@ class CensoredError(RuntimeError):
 
     批量请求时无法定位是哪一句触发,故由上层停止本轮并改用 batch_size=1 重跑。
     """
+
+
+# 每次请求的 usage 累计(prompt_tokens/completion_tokens/...),供外部统计 token 消耗
+_USAGE: list[dict] = []
 
 
 def _is_censored_error(err: Exception) -> bool:
@@ -90,16 +127,16 @@ def _chat(
     对话上下文里继续,配合服务商 prompt cache 省去重复前缀的开销。
     """
     url = cfg["api_base"].rstrip("/") + "/chat/completions"
-    body = json.dumps(
-        {
-            "model": cfg["model"],
-            "temperature": temperature,
-            "messages": messages,
-        }
-    ).encode()
+    body: dict = {
+        "model": cfg["model"],
+        "temperature": temperature,
+        "messages": messages,
+    }
+    if settings.REASONING_EFFORT:  # 关闭推理模型思考,省输出 token
+        body["reasoning_effort"] = settings.REASONING_EFFORT
     req = urllib.request.Request(
         url,
-        data=body,
+        data=json.dumps(body).encode(),
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {cfg['api_key']}",
@@ -114,6 +151,14 @@ def _chat(
                 data = json.loads(resp.read())
             try:
                 content = data["choices"][0]["message"]["content"]
+                u = data.get("usage") or {}
+                _USAGE.append(u)  # 累计每次请求用量,供外部统计
+                if not quiet:  # 输出每次请求的 token 用量,便于排查异常消耗
+                    print(
+                        f"  tokens: prompt={u.get('prompt_tokens')} "
+                        f"completion={u.get('completion_tokens')} {u.get('completion_tokens_details') or ''}",
+                        flush=True,
+                    )
                 return content
             except (KeyError, IndexError, TypeError):
                 raise ValueError(f"API 响应格式异常:{data}") from None
@@ -146,165 +191,285 @@ def _chat(
     raise RuntimeError(f"API 调用失败(已重试 {retries} 次):{err}")
 
 
-def _parse_reply_lines(reply: str, count: int) -> list[str]:
-    """把模型回复解析为与输入 batch 等长的译文列表(按行序对应)。
+def _tag_note(tags: str | None) -> str:
+    """tag 不再整串发给 AI:本地按 tag 判断内容类型,只发一句短注。"""
+    if not tags:
+        return ""
+    if "拓也" in tags:
+        return "\n\n这是「AI拓也」类 AI 续写故事视频。"
+    return ""
 
-    优先识别「编号<TAB>译文」格式(模型有时自作主张加编号,剥掉即可);
-    否则按行序直接对应。返回长度恒为 count,缺行补空串。
+
+def _glossary_sub(text: str, glossary: dict[str, str] | None) -> str:
+    """把原文里的对照表词条预先替换成译文词,套上 ⟦⟧ 标记让 AI 明确知道
+    这是预替换术语(长词优先,避免短词吃掉长词);输出时 AI 会去掉标记。"""
+    if not glossary:
+        return text
+    for k in sorted(glossary, key=len, reverse=True):
+        if k in text:
+            text = text.replace(k, f"⟦{glossary[k]}⟧")
+    return text
+
+
+def _trim_history(messages: list[dict]) -> None:
+    """裁掉翻译对话里的旧轮次,只留 system + 最近 HISTORY_KEEP 轮。
+
+    多轮对话每批都重发全部历史,批数多了 prompt token 线性膨胀;
+    翻译连贯性只需最近几轮上下文。keep=0 视为不裁剪。
     """
+    keep = settings.HISTORY_KEEP
+    if keep <= 0 or len(messages) <= 1 + 2 * keep:
+        return
+    del messages[1 : len(messages) - 2 * keep]
+
+
+def _parse_reply_lines(reply: str, count: int) -> list[str] | None:
+    """把模型回复解析为与输入 batch 等长的译文列表。
+
+    只认「编号<分隔>译文」格式(编号恰好覆盖 1..count 才可信)。
+    无编号回复即使行数恰好相等也不可信:模型可能漏译本轮句子并复读
+    上一轮内容,行数守恒但内容错位,按位置回填会整批污染缓存
+    ——一律返回 None,调用方整批重问或记未译,禁止猜测式回填。"""
     reply = re.sub(r"```[a-zA-Z]*\n?|```", "", reply)
     lines = [ln.strip().strip("*`") for ln in reply.splitlines()]
     lines = [ln for ln in lines if ln]
-    num_re = re.compile(r"^\s*(\d+)\s*(?:\t|[.、。:：)）\]])\s*(.+?)\s*$")
+    num_re = re.compile(r"^\s*(\d+)\s*(?:\t|[.、。:：)）\]]|\s)\s*(.+?)\s*$")
     numbered = {}
     for ln in lines:
         m = num_re.match(ln)
         if m:
             numbered[int(m.group(1))] = m.group(2)
-    if len(numbered) >= count and all(1 <= k <= count for k in numbered):
-        return [numbered.get(i, "") for i in range(1, count + 1)]
-    out = []
-    for ln in lines:  # 行序:剥掉可能存在的编号前缀
-        m = num_re.match(ln)
-        out.append(m.group(2) if m else ln)
-    if len(out) < count:
-        out += [""] * (count - len(out))
-    return out[:count]
+    if numbered:
+        if set(numbered) == set(range(1, count + 1)):
+            return [numbered[i] for i in range(1, count + 1)]
+    return None  # 编号缺失/跳号/合并:整批不可信,禁止按位置回填
 
 
-def translate_texts(
+def calc_concurrency(items: list[tuple[str, str]]) -> int:
+    """按基准实测标定动态并发:总字数 3792→G16,5230→G24,线性插值,钳制 8~32。
+
+    依据:并发过低时组内对话历史滚雪球,prompt 暴涨;过高时 system 前缀
+    ×G 与缺行补问轮增多,成本回升。实测谷底随体量(总字数)在 16~24 之间。
+    """
+    if not items:
+        return 1
+    s = sum(len(t) for _, t in items)
+    g = round(16 + (s - 3792) * 8 / (5230 - 3792))
+    return max(8, min(32, g))
+
+
+def translate_texts_parallel(
     items: list[tuple[str, str]],
     cfg: dict,
     *,
-    batch_size: int = 10,
+    concurrency: int = 8,
     comment: str | None = None,
     glossary: dict[str, str] | None = None,
-    progress=None,
     quiet: bool = False,
     on_batch=None,
+    progress=None,
     timeout: int = 8,
+    src_lang: str | None = None,
+    to_lang: str | None = None,
+    prompt_file: str | None = None,
+    tags: str | None = None,
+    group_batch: int = 20,
+    refuse_fix: bool = True,
+    fail_log: str | None = None,
 ) -> dict[str, str]:
-    """分批翻译句子列表,返回 {键: 译文};未返回译文的键记 UNTRANSLATED_MARK。
+    """分组并发翻译:按时间轴顺序切成 concurrency 个连续块,每组一个独立
+    多轮对话(共享组内上下文+system 前缀命中 prompt cache),组内小批多行
+    请求(每批 group_batch 句,省前缀重复 token);批失败回退逐句重试,
+    单句失败只丢一句,记 UNTRANSLATED_MARK,不连累其他句。
+    refuse_fix=False:缺行/拒译句不补问(补问轮要整段重发历史),直接记
+    UNTRANSLATED_MARK 留给续翻,长文模式用它省 token。
+    fail_log:传入文件路径时,本轮所有失败句(拒译/乱码/缺行)追加写入,
+    一句一行,供用户提取关键词加进 glossary。
+    额度耗尽类错误终止整个任务。"""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
-    `items` 是 [(键, 原文), ...],键原样带回(通常为时间轴键或原文本身)。
-    cfg 含 api_base/api_key/model。comment 为视频描述,追加到系统提示词里
-    引导翻译风格。整个任务在同一个多轮对话里完成:系统提示词只在首轮发送,
-    之后每批作为对话延续,前缀命中服务商 prompt cache 可省 token。
-    批量失败/内容审查的降级语义由调用方处理(捕获 CensoredError 后改
-    batch_size=1 重跑未完成部分)。
-    """
-    from .handoff import UNTRANSLATED_MARK
+    from .handoff import UNTRANSLATED_MARK, is_junk_tr
 
-    system = SYSTEM_PROMPT
+    GROUP_BATCH = group_batch  # 组内每次请求带的句子数
+
+    rep = Reporter(quiet=quiet)
+    tgt = to_lang or settings.TARGET_LANG
+    zh_out = "中" in tgt
+    system = system_prompt(src_lang, to_lang, prompt_file)
     if comment:
         system += (
             f"\n\n视频背景描述:{comment}\n翻译时请结合该描述选择合适的语气与用词。"
         )
+    if tags:
+        system += _tag_note(tags)
     if glossary:
-        # 名词对照表随系统提示词一次性发送(每轮对话只发一次,前缀命中 prompt cache)
         system += (
-            "\n\n名词对照表(必须严格遵守,原文出现以下词时译成对应中文):\n"
-            + "\n".join(f"{k} → {v}" for k, v in glossary.items())
+            f"\n\n原文里的 ⟦⟧ 标记是预替换术语(可能为{tgt}词或英文/数字),"
+            "输出时去掉括号、括号内文字原样保留,禁止回译或改写。"
         )
-    messages: list[dict] = [{"role": "system", "content": system}]
+
     results: dict[str, str] = {}
-    # 长句自动收缩批大小:平均超 100 字每批 1 句,超 50 字每批 2 句,防止长句博客体单批过长漏行
-    if items:
-        avg_len = sum(len(t) for _, t in items) / len(items)
-        orig_bs = batch_size
-        if avg_len > 100:
-            batch_size = 1
-        elif avg_len > 50:
-            batch_size = 2
-        if batch_size < orig_bs and not quiet:
-            print(f"句子平均 {avg_len:.0f} 字,批大小 {orig_bs} -> {batch_size}")
-    t0 = time.monotonic()  # 性能指标起点(整体耗时/剩余/每句用时)
-    done = 0
-    for off in range(0, len(items), batch_size):
-        batch = items[off : off + batch_size]
-        nb = off // batch_size + 1
-        total_batches = (len(items) + batch_size - 1) // batch_size
-        nchars = sum(len(t) for _, t in batch)
-        if not quiet:
-            print(
-                f"\r[第 {nb}/{total_batches} 批] 发送 {len(batch)} 句({nchars} 字)",
-                end="",
-                flush=True,
+    fails: list[str] = []  # 本轮失败的原句(拒译/乱码/缺行),结束时写 fail_log
+    u0 = len(_USAGE)  # 本轮起始下标,结束时汇总本轮 token 消耗
+    lock = threading.Lock()
+    state = {"quota": None, "done": 0}
+    total = len(items)
+    t0 = time.monotonic()
+    n_groups = max(1, min(concurrency, total)) if total else 0
+    # 连续切块:相邻句落进同组对话,语境连贯;组大小≈total/n_groups
+    size = (total + n_groups - 1) // n_groups
+    groups = [items[i : i + size] for i in range(0, total, size)]
+
+    def _send(msgs: list[dict], srcs: list[str]) -> list[str]:
+        """发一个多行请求,返回等长译文列表(缺行/拒译记 UNTRANSLATED_MARK)。"""
+        msgs.append(
+            {
+                "role": "user",
+                "content": "\n".join(
+                    f"{j + 1} {_glossary_sub(s, glossary)}" for j, s in enumerate(srcs)
+                ),
+            }
+        )
+        reply = _chat(msgs, cfg, quiet=True, timeout=timeout)
+        got = _parse_reply_lines(reply, len(srcs))
+        if got is None:
+            # 行数/编号与请求不符(模型合并句子或漏行):按位置回填必错位。
+            # 整批重问一轮(带编号);再失败就整批记未译,绝不猜测回填污染缓存。
+            msgs.append({"role": "assistant", "content": reply})
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": f"你的返回行数与要求不符。请严格每行以编号 1~{len(srcs)} 开头,"
+                    f"一行一句重新输出全部 {len(srcs)} 句的{tgt}译文,禁止合并或省略:\n"
+                    + "\n".join(f"{j + 1} {srcs[j]}" for j in range(len(srcs))),
+                }
             )
-        messages.append({"role": "user", "content": "\n".join(t for _, t in batch)})
-        try:
-            reply = _chat(messages, cfg, quiet=quiet, timeout=timeout)
-            got = _parse_reply_lines(reply, len(batch))
-            from .handoff import is_junk_tr
+            reply2 = _chat(msgs, cfg, quiet=True, timeout=timeout)
+            got = _parse_reply_lines(reply2, len(srcs))
+            if got is None:
+                msgs.pop()  # 移除未得到有效回复的 user 消息,历史保持干净
+                return [UNTRANSLATED_MARK] * len(srcs)
+        if any(not z or is_junk_tr(z) for z in got):
+            if not refuse_fix:
+                # 降级策略:不补问(补问轮整段重发历史),缺行句直接记未译留给续翻
+                msgs.append({"role": "assistant", "content": reply})
+                return [
+                    z if z and not is_junk_tr(z) else UNTRANSLATED_MARK for z in got
+                ]
+            # 缺行:在同一对话里补问一轮(带原编号,按编号精确回填)
+            msgs.append({"role": "assistant", "content": reply})
+            missing = [j for j, z in enumerate(got) if not z or is_junk_tr(z)]
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": f"以下编号的句子没有返回译文,请每行以相同编号开头输出它们的{tgt}译文:\n"
+                    + "\n".join(f"{j + 1} {srcs[j]}" for j in missing),
+                }
+            )
+            reply2 = _chat(msgs, cfg, quiet=True, timeout=timeout)
+            got2 = _parse_reply_lines(reply2, len(missing))
+            if got2:  # 编号仍不对齐(返回 None)时放弃补问,缺行句保持未译
+                for j, z in zip(missing, got2):
+                    if z:
+                        got[j] = z
+            _trim_history(msgs)
+        else:
+            msgs.append({"role": "assistant", "content": reply})
+            _trim_history(msgs)
+        return [z if z and not is_junk_tr(z) else UNTRANSLATED_MARK for z in got]
 
-            # 空行或模型把拒绝语当译文,都算缺行,先在同一对话里补问重试
-            missing = [j for j, zh in enumerate(got) if not zh or is_junk_tr(zh)]
-            if missing:  # 缺行:在同一对话里补问一轮(只发缺的原文,按行序)
-                messages.append({"role": "assistant", "content": reply})
-                fix_src = [batch[j][1] for j in missing]
-                fix_user = (
-                    "以下句子没有返回译文,请逐行输出它们的中文译文,"
-                    "行序与给出顺序一致,不要编号:\n" + "\n".join(fix_src)
-                )
-                messages.append({"role": "user", "content": fix_user})
-                reply2 = _chat(messages, cfg, quiet=quiet, timeout=timeout)
-                messages.append({"role": "assistant", "content": reply2})
-                got2 = _parse_reply_lines(reply2, len(missing))
-                for j, zh in zip(missing, got2):
-                    if zh:
-                        got[j] = zh
-            else:
-                messages.append({"role": "assistant", "content": reply})
-        except RuntimeError as e:
-            if "额度不足" in str(e):  # 剩余 token 耗尽:终止并提醒
-                raise
-            if isinstance(e, CensoredError) and batch_size > 1:
-                # 单句敏感连累整批:停止本轮,由上层改用 batch_size=1 重跑
-                raise CensoredError(
-                    f"本批({batch[0][0]}~{batch[-1][0]})触发内容审查:{e}"
-                ) from None
-            # 其他单批失败不中断整体,回退原文并继续
-            if not quiet:
-                print(
-                    f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}",
-                    flush=True,
-                )
-            messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
-            got = [""] * len(batch)
-        except Exception as e:  # 单批失败不中断整体,回退原文并继续
-            if not quiet:
-                print(
-                    f"\n警告:本批({batch[0][0]}~{batch[-1][0]})翻译失败:{e}",
-                    flush=True,
-                )
-            messages.pop()  # 移除未得到回复的 user 消息,保持对话历史一致
-            got = [""] * len(batch)
-        for (i, _src), zh in zip(batch, got):
-            from .handoff import is_junk_tr
+    def _run_group(group: list[tuple[str, str]]) -> None:
+        msgs: list[dict] = [{"role": "system", "content": system}]
+        censored = 0  # 本组审查命中次数;连续多次说明审查查整个 payload(历史连带拦截)
 
-            if not zh or is_junk_tr(zh):  # 空行或模型把拒绝语当译文:记为未译占位
+        def _reset() -> None:
+            nonlocal censored
+            msgs[:] = [{"role": "system", "content": system}]
+            censored = 0
+
+        def _finish(chunk: list[tuple[str, str]], got: list[str]) -> None:
+            for (k, s), zh in zip(chunk, got):
+                if zh == UNTRANSLATED_MARK:  # 失败句记录,结束时写 fail_log
+                    fails.append(s)
+                zh = zh.replace("⟦", "").replace("⟧", "")  # AI 忘剥术语标记时兜底
+                zh = _norm_punct(zh) if zh_out else zh
+                with lock:
+                    results[k] = zh
+                    state["done"] += 1
+                    if on_batch:
+                        on_batch({k: zh})
+                    if progress:
+                        progress(min(state["done"], total), total)
+            if not quiet:  # 进度与性能指标同行刷新
+                done = state["done"]
+                el = time.monotonic() - t0
+                per = el / done if done else 0.0
+                rem = per * (total - done)
+                rep.line(
+                    f"[并发 {len(groups)} 对话] {done}/{total} 句 "
+                    f"[{int(el // 60):02d}:{el % 60:04.1f}"
+                    f"<{int(rem // 60):02d}:{rem % 60:04.1f}, {per:.2f}s/句]"
+                )
+
+        def _flush(chunk: list[tuple[str, str]]) -> None:
+            """发一批;批失败二分降级(拒译请求不计费,越分越便宜),单句仍失败才标记未译。"""
+            if state["quota"]:  # 额度已耗尽,余句直接放弃
+                return
+            try:
+                got = _send(msgs, [s for _, s in chunk])
+            except RuntimeError as e:
+                if "额度不足" in str(e):
+                    with lock:
+                        state["quota"] = e
+                    return
+                msgs.pop()  # 移除未得到回复的 user 消息,历史保持干净
+                if len(chunk) > 1:
+                    mid = len(chunk) // 2
+                    _flush(chunk[:mid])
+                    _flush(chunk[mid:])
+                    return
+                if isinstance(e, CensoredError) and settings.CENSOR_RESET:
+                    censored += 1
+                    if censored >= 2:
+                        _reset()
                 if not quiet:
-                    print(f"警告:{i} 未返回有效译文,已标记 {UNTRANSLATED_MARK}")
-                zh = UNTRANSLATED_MARK
-            results[i] = zh
-        if on_batch:  # 每批回传部分结果,调用方可在中断时保留已完成部分
-            on_batch({i: zh for (i, _), zh in zip(batch, got)})
-        if not quiet:  # 性能指标与批进度同行,原地刷新不刷屏
-            done += len(batch)
-            el = time.monotonic() - t0
-            per = el / done if done else 0.0
-            rem = per * (len(items) - done)
-            print(
-                f"\r[第 {nb}/{total_batches} 批] 发送 {len(batch)} 句({nchars} 字) "
-                f"[{int(el // 60):02d}:{el % 60:04.1f}"
-                f"<{int(rem // 60):02d}:{rem % 60:04.1f}, {per:.2f}s/句]  ",
-                end="",
-                flush=True,
-            )
-        if progress:
-            progress(min(off + len(batch), len(items)), len(items))
-    if not quiet:
-        print()  # 结束后换行,让后续输出另起一行
+                    print(f"\n警告:{chunk[0][1][:20]}… 翻译失败:{e}", flush=True)
+                got = [UNTRANSLATED_MARK]
+            except Exception:
+                msgs.pop()
+                got = [UNTRANSLATED_MARK] * len(chunk)
+            _finish(chunk, got)
+
+        # 组内敏感词命中的"毒句"先单发(不连累整批),干净句子成批发送
+        gt = glossary or {}
+        risky = [(k, s) for k, s in group if any(t in s for t in gt)]
+        clean = [(k, s) for k, s in group if not any(t in s for t in gt)]
+        for kv in risky:
+            _flush([kv])
+        for off in range(0, len(clean), GROUP_BATCH):
+            _flush(clean[off : off + GROUP_BATCH])
+
+    with ThreadPoolExecutor(max_workers=n_groups) as ex:
+        for g in groups:
+            ex.submit(_run_group, g)
+    rep.close()
+    if not quiet:  # token 消耗与价格估算(¥0.02/百万命中,¥1.00/百万未命中,¥2.00/百万输出)
+        us = [u for u in _USAGE[u0:] if u]
+        pt = sum(u.get("prompt_tokens", 0) for u in us)
+        hit = sum((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) for u in us)
+        ct = sum(u.get("completion_tokens", 0) for u in us)
+        cost = (hit * 0.02 + (pt - hit) * 1.0 + ct * 2.0) / 1e6
+        print(f"token 消耗: 命中{hit} 未命中{pt - hit} 输出{ct} ≈¥{cost:.4f}")
+    if fails and fail_log:  # 失败句落盘,供用户提取关键词加进 glossary
+        try:
+            with open(fail_log, "a", encoding="utf-8") as f:
+                for s in dict.fromkeys(fails):
+                    f.write(s + "\n")
+        except OSError:
+            pass
+    if state["quota"]:
+        raise state["quota"]
     return results
 
 

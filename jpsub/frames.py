@@ -1,7 +1,6 @@
 """ffmpeg 抽帧与帧间差异检测(布局感知)。"""
 from __future__ import annotations
 
-import os
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -64,7 +63,7 @@ def extract_frames(
     cmd += ["-i", str(video)]
     if end is not None:
         cmd += ["-t", str(end - (start or 0))]
-    cmd += ["-vf", vf, "-q:v", "2", pattern]
+    cmd += ["-threads", str(settings.ffmpeg_threads()), "-vf", vf, "-q:v", "2", pattern]
     subprocess.run(cmd, check=True)
     return sorted(out_dir.glob("frame_*.jpg"))
 
@@ -84,7 +83,27 @@ def _binary_mask(image: Image.Image, *, bright_th: int = 170) -> Image.Image:
     # 静止文字的掩膜会被噪声淹没,静态判定完全失效导致吞段。
     # 核心掩膜用更高门槛 210:亮背景场景(天空/火焰)的噪声 vivid 多落在
     # 170~210,唯有白字核心能干净分离,供换段判定使用。
-    bright = vivid.point(lambda p: 255 if p >= bright_th else 0)
+    # 暗场景(画面中位 vivid<130,如暗底灰白字)门槛自适应降到 中位×1.4,
+    # 否则暗字(vivid 中位≈130)被 170 门槛整体打掉导致掩膜破碎;火焰等
+    # 高局部对比噪声用低色度条件(暗白字 R≈G≈B,火焰 R≫B)剔除。
+    if bright_th >= 210:
+        gate = bright_th
+    else:
+        hist = vivid.histogram()
+        acc, total, p50 = 0, sum(hist), 0
+        for i, c in enumerate(hist):
+            acc += c
+            if acc * 2 >= total:
+                p50 = i
+                break
+        gate = bright_th if p50 >= 130 else min(bright_th, int(p50 * 1.4))
+    bright = vivid.point(lambda p: 255 if p >= gate else 0)
+    if gate < bright_th:  # 仅暗场景:放行暗而低饱和的像素(暗白字)
+        chroma = ImageChops.subtract(
+            vivid, ImageChops.darker(ImageChops.darker(r, g), b)
+        )
+        dim_white = chroma.point(lambda p: 255 if p <= 45 else 0)
+        bright = ImageChops.lighter(bright, dim_white)
     binary = ImageChops.multiply(binary, bright)
     # 中值滤波去掉孤立噪点,笔画(2px 以上)保留
     binary = binary.filter(ImageFilter.MedianFilter(3))
@@ -132,27 +151,19 @@ def core_mask(image: Image.Image) -> Image.Image:
     return binary.resize(_DIFF_SIZE, Image.Resampling.NEAREST)
 
 
-def _progress(i: int, total: int, label: str) -> None:
-    """单行刷新的进度显示(不换行,完成后由调用方换行)。"""
-    print(f"\r{label} {i}/{total}", end="", flush=True)
-
-
 def _mask_pair(p: Path) -> tuple[Image.Image, Image.Image]:
     """子进程入口:一帧的主掩膜+核心掩膜(每帧只打开一次)。"""
     with Image.open(p) as im:
         return text_mask(im), core_mask(im)
 
 
-def _mask_one(p: Path) -> Image.Image:
-    """子进程入口:一帧的主掩膜。"""
-    with Image.open(p) as im:
-        return text_mask(im)
-
-
 def _parallel(fn, paths: list[Path], label: str, quiet: bool = False):
-    """多进程并行生成掩膜,吃满逻辑核;帧少时退回单进程。"""
+    """多进程并行生成掩膜,进程数按机器核数自适应;帧少时退回单进程。"""
+    from .progress import Reporter
+
+    rep = Reporter(quiet=quiet)
     n = len(paths)
-    workers = min(os.cpu_count() or 1, n)
+    workers = settings.cpu_workers(n)
     if workers <= 1:
         return [fn(p) for p in paths]
     chunk = max(1, n // (workers * 4))
@@ -162,10 +173,8 @@ def _parallel(fn, paths: list[Path], label: str, quiet: bool = False):
         for i, res in enumerate(ex.map(fn, paths, chunksize=chunk)):
             out[i] = res
             done += 1
-            if not quiet:
-                _progress(done, n, label)
-    if not quiet:
-        print()
+            rep.line(f"{label} {done}/{n}")
+    rep.close()
     return out
 
 
@@ -177,9 +186,20 @@ def text_core_masks(paths: list[Path], quiet: bool = False):
     return masks, cores
 
 
-def text_masks(paths: list[Path], quiet: bool = False) -> list[Image.Image]:
-    """批量生成"文字掩膜":每帧只算一次,供相邻比较与去重复用(多进程并行)。"""
-    return _parallel(_mask_one, paths, "生成掩膜", quiet)
+def text_residual_fp(image: Image.Image) -> bytes:
+    """局部对比灰度指纹(未二值化、无亮度门槛),供 OCR 去重碰撞复核。
+
+    低对比暗字(vivid<170)会被 _binary_mask 的亮度门槛剔除,导致两个
+    不同画面(如片头说明卡与片尾おまけ卡,都是深底居中暗字+相同人物)
+    的文字掩膜字节完全相同。该指纹保留暗字的局部对比信号,能区分这类
+    画面;对背景运动敏感是代价,但正确性优先。
+    """
+    rgb = image.convert("RGB")
+    r, g, b = rgb.split()
+    vivid = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    local = ImageChops.subtract(vivid, vivid.filter(ImageFilter.GaussianBlur(radius=6)))
+    fp = local.resize(_DIFF_SIZE, Image.Resampling.BILINEAR)
+    return fp.point(lambda p: p // 16).tobytes()
 
 
 def strip_static(masks: list[Image.Image], ratio: float = 0.8) -> list[Image.Image]:
@@ -214,10 +234,3 @@ def frame_diff(a: Path, b: Path) -> float:
     """
     with Image.open(a) as ia, Image.open(b) as ib:
         return mask_diff(text_mask(ia), text_mask(ib))
-
-
-def has_changed(prev: Path | None, cur: Path, threshold: float) -> bool:
-    """prev 为 None 或掩膜差异 >= threshold 时视为变化。"""
-    if prev is None:
-        return True
-    return frame_diff(prev, cur) >= threshold
