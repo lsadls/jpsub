@@ -93,12 +93,19 @@ INFO_TEMPLATE = """{url}
 
 FONT = "微软雅黑"
 FONT_SIZE = 20
-MAX_CHARS = 20
+MAX_CHARS = 20  # 字幕每行显示宽度上限(全角1/半角0.5),超宽自动折行
 OUTLINE_COLOR = (255, 165, 0)
 OUTLINE_WIDTH = 1
 SHADOW = 0
 
 EDIT_PLAYBACK_RATE = 1.0  # edit 页视频默认播放速度,如 0.5/1.25/2.0
+
+# ---------- 投稿(B 站) ----------
+BILIUP_COOKIE = "~/.jpsub/cookies.json"  # biliup-rs login 导出的 cookies.json 路径
+UPLOAD_TID = 22  # 投稿分区 tid(鬼畜主区119的二级分区:22鬼畜调教 26音MAD 126人力VOCALOID 216鬼畜剧场)
+UPLOAD_PREFIX = ""  # 投稿标题前缀(如 "[搬运]"),网页「保存前缀」会更新此值(运行时)
+UPLOAD_TAGS = ""  # 兜底标签(info.txt 无标签行时用),逗号分隔
+UPLOAD_DELAY = 0  # 定时发布:从现在起延迟的秒数;0=立即发布
 
 
 def apply_proxy() -> None:

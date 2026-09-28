@@ -20,8 +20,10 @@ def default_work(video: Path) -> Path:
 
 
 def work_of(video: Path) -> Path:
-    """视频所属工作目录:视频已在工作目录内则为其所在目录,否则默认目录。"""
-    p = video.parent
+    """视频所属工作目录:视频已在工作目录内则为其所在目录,否则默认目录。
+    parent 统一转绝对路径:相对路径(如在 work 目录内传 <视频>.mp4 得到 ".")
+    会让 item_stem 变空串,产物文件名退化成 ".ass" 这类无扩展名路径。"""
+    p = video.parent.resolve()
     if (
         (p / handoff.HIDDEN_DIR).is_dir()
         or (p / "info.txt").is_file()  # download 新布局 <标题>_<id>/ 内必有 info.txt

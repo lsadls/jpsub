@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import handoff
 
-_NO_STAGE_A = ("translate", "render", "status")  # 只收 work 的子命令,无下载/抽帧
+_NO_STAGE_A = ("translate", "render", "status", "upload")  # 只收 work 的子命令,无下载/抽帧
 
 
 def _parse_line(line: str):
@@ -41,7 +41,7 @@ def _parse_line(line: str):
             tokens = tokens[:i]
             break
     known = {"extract", "render", "run", "status", "translate", "text",
-             "mask", "maskapply", "voice", "edit", "home", "download"}
+             "mask", "maskapply", "voice", "edit", "home", "download", "upload"}
     if tokens and not (tokens[0] in known or tokens[0].startswith("-s")):
         # 首个 token 不是子命令(裸 URL/视频 id/参数开头),自动视为 download
         tokens = ["download", *tokens]
@@ -375,4 +375,17 @@ def _stage_c(ns, work):
     if ns.command == "status":
         _status(ns)
         return None
+    if ns.command == "upload":
+        from .cli import _output_root
+        from .upload import upload
+
+        w = ns.work
+        if not w.exists():
+            cand = _output_root() / w.name  # 裸条目名按 output/ 下的条目找
+            if cand.is_dir():
+                w = cand
+        return upload(
+            w, title=ns.title, desc=ns.desc, tags=ns.tags,
+            tid=ns.tid, delay=ns.delay,
+        )
     return _maybe_translate_render(ns, Path(work))

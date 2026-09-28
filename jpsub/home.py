@@ -63,6 +63,7 @@ _OP = {
     "mask": "打码",
     "maskapply": "打码应用",
     "burn": "烧录",
+    "upload": "投稿",
 }
 
 _PAGE = """<!doctype html><html lang=zh><meta charset=utf-8>
@@ -131,6 +132,7 @@ button{white-space:nowrap}
 <button onclick=openCrop()>选择原视频字幕区域</button>
 <button onclick=cmd('burn',[])>烧录</button>
 <button onclick=cmd('render',[])>生成字幕</button>
+<button onclick=openUpload()>投稿</button>
 <button onclick=copyInfo()>复制info</button>
 <button onclick=copyTag()>复制tag</button>
 <button onclick=cmd('translate',[])>续翻</button>
@@ -182,6 +184,7 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b>选择字幕区</b> — 页内框选字幕区域,生成 --crop 参数存到工作目录,抽帧时自动优先使用<br>
 <b>烧录</b> — 把ASS烧进视频;有masks.json时自动先打码再烧字幕<br>
 <b>生成字幕</b> — render,用现有译文生成ASS<br>
+<b>投稿</b> — 弹窗确认标题(AI 译)/简介/标签后投稿到 B 站,需先 biliup-rs 登录(见 settings.BILIUP_COOKIE)<br>
 <b>复制info</b> — 把选中条目工作目录的 info.txt 复制到剪贴板<br>
 <b>复制tag</b> — 弹窗列出 info.txt 标签行里的所有 tag,点击单个 tag 复制<br>
 <b>续翻</b> — translate,只翻没翻过的句子<br>
@@ -220,6 +223,39 @@ crop参数 <input id=cropval type=text readonly style="width:260px;background:#1
 <h3 style="margin:0 0 10px">标签 - <span id=tagname></span> <button onclick=$('tagbox').style.display='none'>关闭</button></h3>
 <div id=taglist style="display:flex;flex-wrap:wrap;gap:6px;max-width:70vw"></div>
 <div class=hint style="color:#888;margin-top:8px">点击任意标签复制到剪贴板;点弹层外部或「关闭」收起</div>
+</div>
+</div>
+<div id=upbox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:102;overflow:auto" onclick="if(event.target===this)this.style.display='none'">
+<div style="margin:60px auto;width:min(680px,92vw);background:#252525;border:1px solid #555;border-radius:8px;padding:14px">
+<h3 style="margin:0 0 10px">投稿 - <span id=upname></span></h3>
+<label>标题前缀(保存后长期有效)</label>
+<div style="display:flex;gap:6px">
+<input id=upprefix type=text style="flex:1">
+<button onclick=savePrefix()>保存前缀</button>
+</div>
+<label style="display:block;margin-top:8px">标题(上限80字,留空用原标题)</label>
+<input id=uptitle type=text style="width:100%;box-sizing:border-box">
+<label style="display:block;margin-top:8px">简介</label>
+<textarea id=updesc rows=6 style="width:100%;box-sizing:border-box;background:#333;color:#ddd;border:1px solid #555;border-radius:4px;font:inherit;padding:4px;resize:vertical"></textarea>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">
+<label>标签 <input id=uptags type=text style=width:300px placeholder="逗号分隔"></label>
+<label>分区 <select id=uptid style="background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px">
+<option value=22>鬼畜调教</option>
+<option value=26>音MAD</option>
+<option value=126>人力VOCALOID</option>
+<option value=216>鬼畜剧场</option>
+<option value=127>教程演示</option>
+<option value=24>MAD·AMV(动画)</option>
+<option value=27>综合(动画)</option>
+<option value=21>日常(生活)</option>
+</select></label>
+<label>定时(秒) <input id=updelay type=number style=width:80px title="从现在起延迟多少秒发布,0=立即"></label>
+</div>
+<div style="margin-top:10px">
+<button onclick=doUpload()>确认投稿</button>
+<button onclick=$('upbox').style.display='none'>取消</button>
+<span id=upmsg style=color:#fc6></span>
+</div>
 </div>
 </div>
 <script>
@@ -348,6 +384,35 @@ async function cpTag(b){
   try{await navigator.clipboard.writeText(b.dataset.t);
     b.textContent='✓ 已复制';setTimeout(()=>b.textContent=b.dataset.t,800)}
   catch(e){prompt('浏览器拒绝访问剪贴板,请手动复制:',b.dataset.t)}
+}
+async function openUpload(){  // 投稿确认弹窗:预填原标题/简介/标签,标题由用户填写
+  if(!selName)return alert('请先在 ② 点击选中一个条目');
+  $('upname').textContent=selName;$('upmsg').textContent='加载元信息…';
+  $('upbox').style.display='block';
+  const j=await(await fetch('/upload-meta?name='+encodeURIComponent(selName))).json();
+  if(!j.ok){alert('失败:'+j.err);$('upbox').style.display='none';return}
+  $('upprefix').value=j.prefix||'';
+  const t=$('uptitle');t.value=j.title;t.placeholder=j.orig_title||'';
+  $('updesc').value=j.desc;
+  $('uptags').value=j.tags;
+  $('uptid').value=String(j.tid);
+  if(!$('uptid').value)$('uptid').value='22';
+  $('updelay').value=j.delay;
+  $('upmsg').textContent='';
+}
+async function savePrefix(){
+  const j=await post('/upload-prefix',{prefix:$('upprefix').value});
+  if(!j.ok)alert('失败:'+j.err);else $('upmsg').textContent='前缀已保存';
+}
+async function doUpload(){
+  if(!$('uptitle').value.trim()&&$('upprefix').value.trim())
+    return alert('标题为空时不能只用前缀,请填写标题');
+  $('upmsg').textContent='提交中…';
+  const j=await post('/upload',{name:selName,title:$('uptitle').value,
+    desc:$('updesc').value,tags:$('uptags').value,
+    tid:+$('uptid').value||0,delay:+$('updelay').value||0});
+  if(!j.ok)alert('失败:'+j.err);
+  else{$('upbox').style.display='none';refreshJobs()}
 }
 async function quitApp(){
   if(!confirm('确定退出 jpsub 程序?正在运行的任务将被终止'))return;
@@ -959,6 +1024,34 @@ class _Home:
                                     if t.strip()
                                 ]
                     utils.http_json(self, {"ok": True, "tags": tags})
+                elif self.path.startswith("/upload-meta?"):
+                    # 投稿确认表单预填:组装稿件元信息(标题走一次 AI 翻译)
+                    import urllib.parse
+
+                    name = str(
+                        urllib.parse.parse_qs(
+                            urllib.parse.urlparse(self.path).query
+                        ).get("name", [""])[0]
+                    )
+                    work = _work_of_name(home.root, name)
+                    if not name or not work.is_dir():
+                        utils.http_json(
+                            self, {"ok": False, "err": "工作目录不存在,先跑完流水线"}
+                        )
+                        return
+                    if (work / "upload.json").is_file():
+                        utils.http_json(
+                            self, {"ok": False, "err": "该条目已投稿过(upload.json 存在)"}
+                        )
+                        return
+                    from .upload import build_meta, load_prefix
+
+                    try:
+                        meta = build_meta(work)
+                    except Exception as e:  # noqa: BLE001
+                        utils.http_json(self, {"ok": False, "err": str(e)})
+                        return
+                    utils.http_json(self, {"ok": True, "prefix": load_prefix(), **meta})
                 elif self.path == "/jobs":
                     for j in home.jobs:
                         if (
@@ -1080,6 +1173,32 @@ class _Home:
                             )
                         elif cf.exists():
                             cf.unlink()
+                        utils.http_json(self, {"ok": True})
+                    elif self.path == "/upload-prefix":
+                        # 保存标题前缀(settings.UPLOAD_PREFIX 运行时配置)
+                        from .upload import save_prefix
+
+                        save_prefix(str(body.get("prefix", "")))
+                        utils.http_json(self, {"ok": True})
+                    elif self.path == "/upload":
+                        # 投稿:表单确认后的标题/简介/标签转成 upload 子命令后台执行
+                        name = str(body.get("name", "")).strip()
+                        work = _work_of_name(home.root, name)
+                        if not name or not work.is_dir():
+                            utils.http_json(self, {"ok": False, "err": "工作目录不存在"})
+                            return
+                        args = ["upload", str(work)]
+                        if body.get("title"):
+                            args += ["--title", str(body["title"])]
+                        if "desc" in body:
+                            args += ["--desc", str(body.get("desc") or "")]
+                        if "tags" in body:
+                            args += ["--tags", str(body.get("tags") or "")]
+                        if body.get("tid"):
+                            args += ["--tid", str(int(body["tid"]))]
+                        if body.get("delay"):
+                            args += ["--delay", str(int(body["delay"]))]
+                        home.spawn(f"{name} 投稿", [*exe, *args], label=f"{name} 投稿")
                         utils.http_json(self, {"ok": True})
                     elif self.path == "/quit":
                         utils.http_json(self, {"ok": True})

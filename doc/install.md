@@ -30,7 +30,7 @@ settings.py        ← 你的 AI 配置(可选,没有就用 bin 里的默认值)
 ffmpeg.exe
 ffprobe.exe
 yt-dlp.exe
-settings.py   ← 默认配置,不用动
+settings.py.example  ← 默认配置模板,不用动
 ```
 
 也可以不用放进 `bin`，改为安装到系统并加入 PATH，二选一即可。

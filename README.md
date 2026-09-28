@@ -9,7 +9,7 @@
 ## 快速开始
 
 1. 到本仓库 **Releases** 页面下载打包好的程序，解压即用（已内置 ffmpeg / yt-dlp 和 Python 库，OCR 走在线 API，无本地模型）；
-2. 把 `settings example.py` 复制改名为 `settings.py`，填入你的 AI 翻译与 OCR 配置（详见 [doc/settings.md](doc/settings.md)）；
+2. 把 `settings.py.example` 复制改名为 `settings.py`，填入你的 AI 翻译与 OCR 配置（详见 [doc/settings.md](doc/settings.md)）；
 3. 开启代理软件的**全局模式**，双击运行程序自动打开浏览器主页（详见 [doc/home.md](doc/home.md)）。
 
 ## 使用方法（主页）
@@ -23,13 +23,13 @@
 - **③ 批量脚本**：每行一条任务，点「运行脚本」批量执行（详见 [doc/batch.md](doc/batch.md)）；
 - **④ 任务**：所有后台任务的实时进度，点击选中后可「终止选中」。
 
-翻译完成（除烧录模式外）会自动打开**译文调整器**让你确认/修正译文，点 **生成字幕** 输出 `.ass`。
+翻译完成（除烧录模式外）会自动打开**译文调整器**让你确认/修正译文，点 **生成字幕** 输出字幕（格式单选：必剪 `.bcc` / `.ass`，详见 [doc/edit.md](doc/edit.md)）。
 
-![译文调整器](doc/editor.png)
+![译文调整器](doc/edit.png)
 
 还内置**打码系统**：网页上框选区域即可给画面打马赛克/遮挡/静音（详见 [doc/mask.md](doc/mask.md)）。
 
-![打码选取器](doc/mask_system.png)
+![打码选取器](doc/mask.png)
 
 更多细节与常用操作表见 [doc/home.md](doc/home.md)。
 
@@ -43,6 +43,7 @@
 | [doc/home.md](doc/home.md)         | 主页各分区与按钮详细说明                     |
 | [doc/edit.md](doc/edit.md)         | 译文调整器（浏览器可视化改译文）             |
 | [doc/mask.md](doc/mask.md)         | 打码（马赛克/遮挡/静音）                     |
+| [doc/upload.md](doc/upload.md)     | B 站投稿（biliup）                |
 | [doc/batch.md](doc/batch.md)       | 批量模式（-s 脚本）                          |
 | [doc/perf.md](doc/perf.md)         | 性能调优（翻译 token 与耗时）                |
 | [doc/cli.md](doc/cli.md)           | 命令行参考（进阶）                           |

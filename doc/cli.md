@@ -80,6 +80,8 @@
 .venv\Scripts\jpsub.exe render output/sm114514.jpsub
 ```
 
+> 加 `--bcc` 输出必剪 `.bcc`（JSON）而不是 `.ass`（不做 ASS 式自动折行，译文最多保留一个换行），字段对齐 B 站 CC 导出格式。生成的 `.ass` 文件名会用条目名（去掉尾部视频 id）。
+
 > 如果 `segments.json` 不小心改乱了：点调整器里的 **还原改动** 按钮（或删除它后重跑 `extract`）可从原始备份 `segments.orig.json` 恢复到 OCR 刚识别完的状态。
 
 > **防误操作备份**：OCR 覆盖 segments.json、翻译/调整器写回译文之前,都会自动把旧文件备份到工作目录的 `backup/时间戳/` 文件夹,改坏了可以从那里找回。
@@ -151,7 +153,7 @@ CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
 .venv\Scripts\jpsub.exe voice "output\radio.mp4"
 ```
 
-按音量变化（静音检测）自动切出语音段落，产出 `segments.json`（原文留空）。在译文调整器里手填原文，再「生成字幕」或「续翻」交给 AI 翻译。支持 `--start/--end` 跳过片头片尾。
+按音量变化（静音检测）自动切出语音段落，产出 `segments.json`（原文留空）。在译文调整器里手填原文，再「生成字幕」或「续翻」交给 AI 翻译。支持 `--start/--end` 跳过片头片尾。朗读音量起伏导致一句话被切碎时，可调 `--hyst`（滞回 dB，默认 10）：语音需跌到（阈值-10dB）以下才算静音开始。
 
 ## 11. 翻译任意文本文件
 
@@ -205,3 +207,13 @@ TARGET_LANG = "简体中文"   # 目的语言
 ```
 
 留空用内置默认（`prompts/bb.txt`）。文件里可用占位符：`{src}` 源语言名、`{tgt}` 目的语言名、`{punct}` 标点规则（目的语为中文时生成）。也可写 `settings.PROMPT_FILE` 永久生效。
+
+## 16. B 站投稿（upload）
+
+```
+.venv\Scripts\jpsub.exe upload output/sm114514.jpsub --delay 3600
+```
+
+用 biliup 把工作目录成品（打码视频 > 原视频）上传并提交稿件：标题默认 info.txt 原标题（可 `--title`/`--desc` 覆盖，支持标题前缀）、简介由 info.txt 组装、标签取 info 标签行（兜底 `UPLOAD_TAGS`）、封面 `cover.jpg` 自动上传、转载 URL 自动填、`--delay` 定时发布。一次性登录用 `jpsub upload <目录> --login`（代跑 biliup-rs 扫码）或 `biliup login` 后把 cookies.json 放 `~/.jpsub/`。BV 号写回工作目录 `upload.json`，重复投稿先查此文件拦截。直接传**裸条目名**也可以，自动按 output/ 下的条目查找。详见 [upload.md](upload.md)。
+
+> `mask` / `maskapply` 的视频参数同样支持直接传工作目录或裸条目名，自动定位其中的视频。

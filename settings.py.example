@@ -64,3 +64,11 @@ MAX_CHARS = 20  # 每行最大字数(超出折行)
 OUTLINE_COLOR = (255, 165, 0)  # 描边颜色(RGB,当前为橙色)
 OUTLINE_WIDTH = 1  # 描边宽度
 SHADOW = 0  # 阴影宽度
+
+# ---------- 投稿(B 站) ----------
+# 先登录一次:biliup-rs login 扫码,把 cookies.json 放到 ~/.jpsub/(或改下面的路径)
+BILIUP_COOKIE = "~/.jpsub/cookies.json"  # cookies.json 路径(biliup-rs 与本程序共用)
+UPLOAD_TID = 22  # 投稿分区 tid,默认鬼畜调教(22);常用:26音MAD 126人力VOCALOID 216鬼畜剧场 21日常
+UPLOAD_PREFIX = ""  # 投稿标题前缀,如 "[搬运]";主页「保存前缀」会更新(运行时,重启回到此处配置)
+UPLOAD_TAGS = ""  # 兜底标签(info.txt 无标签行时用),逗号分隔,如 "BB剧场,翻译"
+UPLOAD_DELAY = 0  # 定时发布:从现在起延迟的秒数(如 3600=1小时后);0=立即

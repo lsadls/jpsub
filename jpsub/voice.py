@@ -17,17 +17,15 @@ from .settings import binary
 _WINDOW = 0.25  # 音量统计窗口秒数
 
 
-def _rms_stream(
-    video: Path, start: float | None, end: float | None
-) -> list[tuple[float, float]]:
-    """逐帧输出 (时间, RMS dB)。用 astats+ametadata 打到 stdout 再解析。"""
-    cmd = [binary("ffmpeg"), "-hide_banner", "-nostats"]
-    if start is not None:
-        cmd += ["-ss", f"{start:.3f}"]
-    cmd += ["-i", str(video)]
-    if end is not None:
-        cmd += ["-t", f"{max(0.0, end - (start or 0)):.3f}"]
-    cmd += [
+def _rms_stream(video: Path) -> list[tuple[float, float]]:
+    """逐帧输出 (时间, RMS dB)。用 astats+ametadata 打到 stdout 再解析。
+
+    不用 -ss/-t 做裁剪:-ss 在 -i 前会重置 pts(有无 -t 行为还不同),
+    时间轴不可靠;全片解码很快,区间过滤交给调用方在 Python 里做。
+    """
+    cmd = [
+        binary("ffmpeg"), "-hide_banner", "-nostats",
+        "-i", str(video),
         "-af",
         "astats=metadata=1:reset=1,"
         "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
@@ -99,6 +97,7 @@ def detect_speech_segments(
     noise: str | None = None,
     min_silence: float = 0.6,
     pad: float = 0.2,
+    hyst: float = 10.0,
     start: float | None = None,
     end: float | None = None,
 ) -> list[Segment]:
@@ -106,9 +105,16 @@ def detect_speech_segments(
 
     noise: None=自适应阈值;否则固定阈值(如 '-30dB')。
     min_silence: 音量低于阈值持续这么久才算段落间隔;pad: 段两侧缓冲秒数。
+    hyst: 滞回带宽 dB——进入语音用高阈值 th,退到 th-hyst 以下才算静音开始。
+        朗读音量起伏(软音节)常低于全局阈值十几个 dB,单阈值会把一句话切碎;
+        滞回让语音一旦确立就不因短暂变轻而丢失,只对持续深跌的真静音切分。
     start/end: 只处理该区间。
     """
-    frames = _rms_stream(video, start, end)
+    frames = _rms_stream(video)
+    if start is not None:  # 区间过滤:留 0.5s 余量给窗口聚合
+        frames = [(t, db) for t, db in frames if t >= start - 0.5]
+    if end is not None:
+        frames = [(t, db) for t, db in frames if t <= end]
     t0 = start if start is not None else frames[0][0]  # 音轨可能晚于视频开头(如封面段)
     if end is None:
         end = frames[-1][0] + _WINDOW  # 最后一帧时间即音频末尾
@@ -122,22 +128,21 @@ def detect_speech_segments(
         for i, v in sorted(by_win.items())
     ]
     vals = [db for _, db in win_db]
-    if noise:
-        th = float(noise.lower().replace("db", ""))
-    else:
-        th = _auto_threshold(vals)
-    print(f"音量阈值:{th:.1f} dB({len(win_db)} 窗口 × {_WINDOW}s)")
-    # 低于阈值为静音;静音连续 >= min_silence 才切分
+    th = float(noise.lower().replace("db", "")) if noise else _auto_threshold(vals)
+    th_lo = th - hyst
+    print(f"音量阈值:{th:.1f} dB(滞回下限 {th_lo:.1f},{len(win_db)} 窗口 × {_WINDOW}s)")
+    # 滞回状态机:db>=th 进入语音;语音期间跌到 th_lo 以下才开始计静音,
+    # 静音持续 >= min_silence 才切分;[th_lo, th) 之间维持原状态
     sil_start: float | None = None
-    cuts: list[float] = []  # 静音区间 (起, 止)
+    cuts: list[tuple[float, float]] = []  # 静音区间 (起, 止)
     for t, db in win_db:
-        if db < th:
-            if sil_start is None:
-                sil_start = t
-        elif sil_start is not None:
-            if t - sil_start >= min_silence:
-                cuts.append((sil_start, t))
-            sil_start = None
+        if db >= th:
+            if sil_start is not None:
+                if t - sil_start >= min_silence:
+                    cuts.append((sil_start, t))
+                sil_start = None
+        elif db < th_lo and sil_start is None:
+            sil_start = t
     if sil_start is not None:  # 结尾静音
         cuts.append((sil_start, hi))
     # 语音 = [t0, hi] 减去静音区间

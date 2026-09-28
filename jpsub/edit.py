@@ -84,7 +84,7 @@ input.tin{width:60px}
 <button id=force-tr title="重新翻译全部句子(含已译)">重翻</button>
 <label style=cursor:pointer><input type=checkbox id=longtr>长文</label>
 </span>
-<span class=grp><button id=save>保存</button><input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"> <button id=render>生成字幕</button></span>
+<span class=grp><button id=save>保存</button><input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"> <label title="生成字幕的格式">格式:<input type=radio name=fmt value=bcc checked>bcc</label><label><input type=radio name=fmt value=ass>ass</label> <button id=render>生成字幕</button></span>
 <span class=grp>
 <button id=b2a>转换</button>
 <input type=file id=convpick accept=".bcc,.ass" style=display:none>
@@ -379,7 +379,8 @@ $('force-tr').onclick=()=>startTr(true);
 $('render').onclick=async()=>{
   if(!await save())return;
   msg.textContent='生成字幕中...';
-  const j=await(await fetch('/render',{method:'POST'})).json();
+  const fmt=document.querySelector('input[name=fmt]:checked').value;
+  const j=await post2('/render',{fmt});
   msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
 };
 $('restore').onclick=async()=>{
@@ -787,7 +788,8 @@ class _Editor:
                         utils.http_json(self, {"ok": False, "err": str(e)})
                 elif self.path == "/render":
                     try:
-                        out = editor.run_render()
+                        b = json.loads(body) if body else {}
+                        out = editor.run_render(bcc=b.get("fmt", "bcc") == "bcc")
                         utils.http_json(self, {"ok": True, "out": str(out)})
                     except Exception as e:  # noqa: BLE001
                         utils.http_json(self, {"ok": False, "err": str(e)})
@@ -844,10 +846,11 @@ class _Editor:
     def rows(self) -> list[dict]:
         return _read_rows(self.work)
 
-    def run_render(self) -> Path:
+    def run_render(self, bcc: bool = False) -> Path:
         from . import cli
 
-        args = cli.parse_args(["render", str(self.work)])
+        argv = ["render", str(self.work)] + (["--bcc"] if bcc else [])
+        args = cli.parse_args(argv)
         return cli._render(args)
 
     def run_burn(self, ass_file: Path | None = None) -> Path:
@@ -856,7 +859,7 @@ class _Editor:
         if not self.video:
             raise SystemExit("错误:找不到视频文件,无法烧录")
         if ass_file is None:
-            ass = self.run_render()
+            ass = self.run_render()  # 烧录始终用 ass(ffmpeg 需要)
         else:
             # 文件选择器指定的字幕:.bcc 先转 .ass,再直接烧录
             ass = _bcc2ass(ass_file) if ass_file.suffix.lower() == ".bcc" else ass_file

@@ -1,6 +1,6 @@
 # 配置详解（settings.py）
 
-在程序目录新建 `settings.py`（打包版内置默认值，这个文件可覆盖它们），填入你的 AI 服务信息。程序目录下另有一份 `settings example.py` 是同样的带注释模板，可直接复制改名为 `settings.py` 使用。只有你想修改的项才需要写，其余保持默认。
+在程序目录新建 `settings.py`（打包版内置默认值，这个文件可覆盖它们），填入你的 AI 服务信息。程序目录下另有一份 `settings.py.example` 是同样的带注释模板，可直接复制改名为 `settings.py` 使用。只有你想修改的项才需要写，其余保持默认。
 
 > 推荐 [千问 AI 平台](https://platform.qianwenai.com)：注册的免费额度够翻译几百个视频。
 
@@ -78,4 +78,11 @@ SHADOW = 0  # 阴影宽度
 
 # 译文调整器
 EDIT_PLAYBACK_RATE = 1.0  # 视频默认播放速度,如 0.5/1.25/2.0
+
+# ---------- B 站投稿（upload，详见 upload.md） ----------
+BILIUP_COOKIE = "~/.jpsub/cookies.json"  # biliup-rs 登录 cookies 路径(`jpsub upload <目录> --login` 扫码)
+UPLOAD_TID = 22     # 投稿分区 tid,默认鬼畜调教(22);26 音MAD / 126 人力VOCALOID / 216 鬼畜剧场
+UPLOAD_PREFIX = ""  # 投稿标题前缀,如 "[搬运]";主页「保存前缀」会更新运行时值
+UPLOAD_TAGS = ""    # 兜底标签(info.txt 无标签行时用),逗号分隔
+UPLOAD_DELAY = 0    # 定时发布:从现在起延迟秒数(3600=1小时后);0=立即
 ```

@@ -189,6 +189,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     r.add_argument("work", type=Path)
     r.add_argument("-o", "--output", type=Path, help="输出 .ass(默认 <work>.ass)")
     r.add_argument(
+        "--bcc", action="store_true",
+        help="输出必剪 .bcc(JSON)而不是 .ass(不做自动折行)",
+    )
+    r.add_argument(
         "--cache", type=Path, default=None, help="默认 <工作目录>/cache.json"
     )
     add_style(r)
@@ -304,6 +308,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     v.add_argument(
         "--pad", type=float, default=0.2, help="每段两侧扩展的缓冲秒数(默认 0.2)"
     )
+    v.add_argument(
+        "--hyst",
+        type=float,
+        default=10.0,
+        help="滞回带宽 dB:语音退到(阈值-hyst)以下才算静音开始,防软朗读被切碎(默认 10)",
+    )
     v.add_argument("--start", type=parse_time, default=None, help="只处理该时刻之后")
     v.add_argument("--end", type=parse_time, default=None, help="只处理该时刻之前")
     v.add_argument(
@@ -323,6 +333,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     hm.add_argument(
         "--root", type=Path, default=None, help="产物根目录(默认 <项目根>/output)"
     )
+
+    up = sub.add_parser("upload", help="把工作目录成品投稿到 B 站(biliup)")
+    up.add_argument("work", type=Path, help="工作目录(含视频/info.txt/cover.jpg)")
+    up.add_argument("--title", help="稿件标题(默认 info.txt 原标题的 AI 译文)")
+    up.add_argument("--desc", help="稿件简介(默认 info.txt 组装)")
+    up.add_argument("--tags", help="逗号分隔标签(默认 settings.UPLOAD_TAGS)")
+    up.add_argument("--tid", type=int, help="分区 tid(默认 settings.UPLOAD_TID)")
+    up.add_argument(
+        "--delay", type=int, help="定时发布:从现在起延迟秒数(默认 settings.UPLOAD_DELAY)"
+    )
+    up.add_argument("--login", action="store_true", help="扫码登录(biliup-rs),保存 cookies")
 
     d = sub.add_parser(
         "download",
@@ -390,9 +411,23 @@ def _work_of(video: Path) -> Path:
     return utils.work_of(video)
 
 
+def _video_arg(video: Path) -> Path:
+    """mask/maskapply 的视频参数:允许传工作目录或裸条目名,自动定位其中的视频
+    (ffprobe 传目录会直接报错)。"""
+    if video.is_file():
+        return video
+    for cand in (video, _output_root() / video.name):
+        if cand.is_dir():
+            v = utils.find_video(cand)
+            if v:
+                return v
+    return video  # 原样返回,让后续报错信息可读
+
+
 def _ass_path(work: Path) -> Path:
-    """ASS 路径:工作目录内,以条目名命名(用户可见文件)。"""
-    return work / (handoff.item_stem(work) + ".ass")
+    """ASS 路径:工作目录内,以条目名命名(去掉尾部视频 id 如 _sm29889006)。"""
+    stem = re.sub(r"_[a-z]{2}\d+$", "", handoff.item_stem(work))
+    return work / (stem + ".ass")
 
 
 def _find_ass(work: Path) -> Path:
@@ -859,19 +894,24 @@ def _render(args) -> Path:
     cache = TranslationCache(args.cache or handoff.cache_path(work))
     segs = handoff.read_segments(seg_file)
     out = args.output or _ass_path(work)
+    if getattr(args, "bcc", False):
+        out = out.with_suffix(".bcc")
     trs = handoff.resolve(segs, cache)
     if not any(trs):
         # 完全没有译文:用日文原文生成字幕
         if not getattr(args, "batch", False):
             print("没有译文,改用日文原文生成字幕")
         trs = [s.text for s in segs]
-    ass.write_ass(
-        segs,
-        trs,
-        out,
-        font=args.font,
-        font_size=args.font_size,
-    )
+    if getattr(args, "bcc", False):
+        ass.write_bcc(segs, trs, out)
+    else:
+        ass.write_ass(
+            segs,
+            trs,
+            out,
+            font=args.font,
+            font_size=args.font_size,
+        )
     if not getattr(args, "batch", False):
         print(f"完成:{out}")
     return out
@@ -1272,6 +1312,7 @@ def _voice(args) -> Path:
         noise=args.noise,
         min_silence=args.min_silence,
         pad=args.pad,
+        hyst=args.hyst,
         start=args.start,
         end=args.end,
     )
@@ -1423,7 +1464,7 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
     # 允许省略子命令:`jpsub [选项] <url或视频id>` 直接视为下载
     _SUBS = {
         "extract", "render", "run", "status", "translate", "text",
-        "mask", "maskapply", "voice", "edit", "home", "download",
+        "mask", "maskapply", "voice", "edit", "home", "download", "upload",
     }
     if isinstance(argv, list) and argv and argv[0] not in _SUBS:
         from pathlib import Path as _Path
@@ -1462,11 +1503,12 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
     if args.command == "mask":
         from .mask import picker
 
-        picker(args.video, args.masks)
+        picker(_video_arg(args.video), args.masks)
         return None
     if args.command == "maskapply":
         from .mask import apply_masks, default_masks_path
 
+        args.video = _video_arg(args.video)
         masks = args.masks or default_masks_path(args.video)
         out = args.output or _product_out(args.video, ".masked.mp4")
         apply_masks(args.video, masks, out)
@@ -1487,6 +1529,24 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
         from .home import home_page
 
         return home_page(args.root)
+    if args.command == "upload":
+        from . import upload as _up
+
+        work = args.work
+        if not work.exists():  # 裸条目名(批量脚本 upload <名>)按 output/ 下的条目找
+            cand = _output_root() / work.name
+            if cand.is_dir():
+                work = cand
+        if not work.is_dir():
+            raise SystemExit(f"错误:找不到工作目录 {work}")
+        if args.login:
+            _up.login()
+            return None
+        return _up.upload(
+            work,
+            title=args.title, desc=args.desc, tags=args.tags,
+            tid=args.tid, delay=args.delay,
+        )
     # run = extract + (默认)translate + render
     work = args.work or _work_of(args.video)  # 视频已在工作目录内则沿用,否则默认目录
     # --burn 且已有 ASS:跳过流水线直接烧录(--force 时强制重跑)

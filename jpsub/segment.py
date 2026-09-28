@@ -7,7 +7,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from difflib import SequenceMatcher
+
+from rapidfuzz import fuzz
 
 
 @dataclass
@@ -27,7 +28,7 @@ def normalize(text: str) -> str:
 def similar(a: str, b: str, threshold: float = 0.85) -> bool:
     if not a or not b:
         return False
-    return SequenceMatcher(None, a, b).ratio() >= threshold
+    return fuzz.ratio(a, b) / 100 >= threshold
 
 
 def _typing_partial(short: str, long: str) -> bool:
@@ -44,7 +45,7 @@ def _typing_partial(short: str, long: str) -> bool:
         return True
     if len(short) <= 2:
         return short[0] == long[0]
-    return SequenceMatcher(None, short, long[: len(short)]).ratio() >= 0.7
+    return fuzz.ratio(short, long[: len(short)]) / 100 >= 0.7
 
 
 def merge_partial_duplicates(
