@@ -9,7 +9,7 @@
 - openai:OCR_API_BASE / OCR_API_KEY(留空回退 API_BASE / API_KEY)+ OCR_MODEL
 
 百度按次计费:多帧拼接成一图一次请求,回来后按 y 坐标/编号行拆回各帧,
-单次消耗降为逐帧的约 1/15;5 个免费额度接口轮换,单个用尽自动切下一个。
+单次消耗降为逐帧的约 1/15;4 个免费额度接口轮换,单个用尽自动切下一个。
 """
 from __future__ import annotations
 

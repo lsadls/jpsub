@@ -4,7 +4,7 @@
 
 ### 优化
 
-- **百度 OCR 高精度优先**：逐帧兜底与拼接批量接口均改为高精度优先（`accurate_basic`/`accurate_general` 先于 `general_basic`/`general`），提高小字/复杂画面识别质量；移除不支持 `language_type` 的 `webimage` 接口，免费总额度 4500 → 3500 次/月，提示文案同步更新。
+- **百度 OCR 高精度优先**：逐帧兜底与拼接批量接口均改为高精度优先（`accurate_basic`/`accurate_general` 先于 `general_basic`/`general`），提高小字/复杂画面识别质量；移除不支持 `language_type` 的备用接口，免费额度合计 3500 次/月，提示文案同步更新。
 
 ## 2026-09-28 (8)
 
