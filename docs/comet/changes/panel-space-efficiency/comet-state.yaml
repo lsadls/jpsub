@@ -1,0 +1,159 @@
+schema: comet.native.v4
+name: panel-space-efficiency
+language: zh-CN
+phase: build
+status: active
+state_version: 7
+brief: brief.md
+document_constraints_version: 1
+shape_confirmation_hash: b6c1c287bea3f36675f9546cc6708bb9bc539ef961de71bbcd882843cc2888f9
+spec_changes:
+  - capability: panel-space-efficiency
+    operation: create
+    source: specs/panel-space-efficiency/spec.md
+workspace:
+  isolation: worktree
+  change_branch: comet/panel-space-efficiency
+  target_branch: main
+  finish: null
+loop:
+  stage: repairing
+  goal_cycle: 1
+  iteration: 3
+  attempt: 0
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: submit-builder-candidate
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1：打开主页，「对选中项」区域的按钮分成 3
+      个行内标签组：编辑与翻译、产出与分享、删除(不可恢复)；「删除(不可恢复)」组只含删除工作目录与删除视频两个按钮；「下载(网络)」与「本地视频」合并为「输入」组。
+    result: pending
+    reason: null
+  - id: A2
+    source: brief.md
+    text: A2：三页所有按钮的 `id` 与 `onclick` 与改动前一致（无丢失、无改名），逐一触发时请求目标不变，页面加载与操作无 JS 报错。
+    result: pending
+    reason: null
+  - id: A3
+    source: brief.md
+    text: A3：打开 edit 页，右侧分组中「保存」「还原改动」位于同一行内标签组，分组总数不多于 5。
+    result: pending
+    reason: null
+  - id: A4
+    source: brief.md
+    text: A4：打开 mask 页，「导出片段」按钮位于左侧按钮区（不在右列）；右列只有打码列表，列表可视高度不小于改动前（改动前
+      max-height:66.7vh）。
+    result: pending
+    reason: null
+  - id: A5
+    source: brief.md
+    text: A5：三页分组不再使用卡片边框块样式（改动前 `.sec` 的 border/background），改为小号行内标签 + 按钮跟随的紧凑布局。
+    result: pending
+    reason: null
+  - id: A6
+    source: brief.md
+    text: A6：`docs/home.md`、`docs/edit.md`、`docs/mask.md` 描述的分组名称与页面实际一致。
+    result: pending
+    reason: null
+builder_handoff:
+  candidate_id: 910e32b6-e4c9-4095-9417-7336d859be6a
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:3d5262d4-c3bd-4a8a-b5e4-f8c3702e358d
+  iteration: 2
+  summary:
+    text: 修复轮（重交）：内容与上轮候选一致，无文件改动——三页面板利用率改造已就绪（home 4 组/edit 保存与还原合并/mask
+      导出入左区+列表放大+行内标签式，docs 三份同步），覆盖 A1-A6。开发期检查：按钮 id/onclick 与 HEAD
+      一致、组名核对、CSS 无卡片边框残留、python compile、node --check 均通过。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+  checks:
+    - name:
+        text: button-id-onclick-parity-vs-HEAD
+        truncated: false
+      result: passed
+      note:
+        text: home 35 / edit 19 / mask 8
+        truncated: false
+    - name:
+        text: group-names-extract
+        truncated: false
+      result: passed
+      note:
+        text: home 4 组、edit 5 组、mask 4 组
+        truncated: false
+    - name:
+        text: css-inline-label-no-card
+        truncated: false
+      result: passed
+      note:
+        text: .sec flex 行内式，仅 .sec.danger 保留红框
+        truncated: false
+    - name:
+        text: python-compile
+        truncated: false
+      result: passed
+      note:
+        text: 三文件 compile 通过
+        truncated: false
+    - name:
+        text: node-check-inline-js
+        truncated: false
+      result: passed
+      note:
+        text: 三页内联 script 通过
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: 未做浏览器交互实测
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-29T15:51:23.316Z
+blockers: []
+verification: null
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native check input changed after the candidate was built; a new Builder
+        candidate is required before checks can run again.
+      truncated: false
+    completed_at: 2026-09-29T15:50:46.324Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native check input changed after the candidate was built; a new Builder
+        candidate is required before checks can run again.
+      truncated: false
+    completed_at: 2026-09-29T15:51:33.358Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pending
+verification_report: null
+archived: false
+created_at: 2026-09-29T15:19:23.951Z

@@ -319,7 +319,7 @@ body{font:14px sans-serif;margin:12px;background:#1e1e1e;color:#ddd}
 button,input,select{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:3px 8px;font:inherit}
 button{cursor:pointer}button:hover{background:#444}
 table{border-collapse:collapse;width:100%}
-#list{display:block;max-height:66.7vh;overflow-y:auto}
+#list{display:block;max-height:calc(100vh - 80px);overflow-y:auto}
 th{position:sticky;top:0;background:#1e1e1e;z-index:1}
 td,th{border:1px solid #444;padding:2px 6px;text-align:left}
 tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
@@ -327,8 +327,8 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 #msg{color:#fc6;min-height:1.2em;clear:both}
 .hint{color:#888;margin-top:6px}
 .grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
-.sec{margin-top:10px}
-.st{display:block;color:#9ab;font-size:12px;font-weight:600;margin-bottom:3px}
+.sec{margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px}
+.st{color:#9ab;font-size:12px;font-weight:600;white-space:nowrap}
 </style>
 <h3>打码选取 - @@TITLE@@</h3>
 <div id=main>
@@ -355,6 +355,7 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 <div class=sec><b class=st>保存与应用</b>
 <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
 <span class=grp><button id=save>保存</button><input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"> <button id=apply>应用打码</button></span>
+<span class=grp><button id=cutexport title=保存后导出:当前生效时间段打码成短片段>导出片段</button></span>
 <span class=hint style=align-self:center>列表序号可点击跳转</span>
 </div></div>
 <div class=sec><b class=st>还原与备份</b>
@@ -367,9 +368,6 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 键盘:←/→ 或 A/D ±1秒(Shift ±0.1秒,Alt ±5秒),↑/↓、W/S 或 PageUp/PageDown ±10秒,Home/End 跳到首尾;Q 播放/暂停,C 新增 mask(当前帧~+5秒,沿用上次区域),Z/X 设当前条目的开始/结束,V 新增「裁掉」片段(应用/导出时整段剔除)。</div>
 </div>
 <div id=right>
-<div class=sec style=margin-top:0><b class=st>导出</b>
-<div>把当前生效的时间段打码后单独导出 <button id=cutexport title=保存后导出:当前生效时间段打码成短片段>导出片段</button></div>
-</div>
 <table id=list><tr><th>#</th><th>时间</th><th>区域</th><th>效果</th><th></th></tr></table>
 </div>
 </div>
