@@ -3,6 +3,9 @@
 masks.json 为 JSON 数组,每条:{"start","end","x","y","w","h","effect","vol"}
 effect 可为: blur[:强度] / color:RRGGBB / 图片路径(png/jpg) / mute(仅音频)
 vol 为该段音量倍率(默认 1 不处理;0=静音),起止时间内生效。坐标为原视频像素。
+
+`jpsub mask --auto` 用肤色 + 像素分布判据自动检出实拍真人的肤色区域,结果写到
+同目录的 masks.auto.json(不覆盖手工 masks.json),人工复核后再交给 maskapply。
 """
 
 from __future__ import annotations
@@ -13,6 +16,8 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
 
 from . import settings, utils
 
@@ -975,6 +980,268 @@ def default_masks_path(video: Path) -> Path:
     from . import handoff
 
     return handoff.masks_path(_work_of(video))
+
+
+def auto_masks_path(video: Path) -> Path:
+    """自动检测结果:与手工 masks.json 同目录的独立文件(不覆盖手工清单)。"""
+    return default_masks_path(video).with_name("masks.auto.json")
+
+
+_SKIN_BLOCK = 8  # 连通性判定用的网格块边长(像素)
+_SKIN_BLOCK_FRAC = 0.35  # 网格块被判为肤色的最低肤色像素占比(单块 .any() 会把零星噪点连成整屏)
+_SKIN_MIN_AREA_FRAC = 0.004  # 连通组最低肤色像素占比
+_SKIN_MAX_BOX_FRAC = 0.4  # 连通组外接矩形占整帧面积上限(超过视为成片「肤色样」背景,宁可漏检不可误伤)
+_SKIN_MAX_ENTRY_FRAC = 0.5  # 合并后区间条目占整帧面积上限(超过视为跨半屏误覆盖,丢弃该条目)
+_SKIN_MIN_FILL = 0.22  # 外接矩形内的肤色填充率下限
+_SKIN_MIN_GRAD = 3.0  # 区域平均灰度梯度下限(真实影像有噪点;纯色渲染面接近 0)
+_SKIN_MAX_GRAD = 26.0  # 区域平均灰度梯度上限(泥土/砖墙等斑驳纹理会被排除)
+_SKIN_MAX_LUM = 155.0  # 区域亮度上限(米色墙面/沙地偏亮,不算肤色)
+_SKIN_MAX_LUM_STD = 40.0  # 区域亮度标准差上限
+_SKIN_MAX_SAT = 0.47  # HSV 饱和度上限(过饱和的橙红物体不是真人肤色)
+_SKIN_CB_MIN = 105  # YCbCr 的 Cb 下限(偏青的暖色不是肤色)
+_SKIN_MARGIN = 0.2  # 外接矩形外扩比例
+_SKIN_MIN_MARGIN = 12  # 外扩像素下限
+_SKIN_TRACK_IOU = 0.3  # 相邻采样秒归入同一区间的矩形 IoU 下限
+_SKIN_EFFECT = "color:000000"  # 与手工基线一致:纯黑覆盖
+
+
+def _skin_mask(rgb) -> np.ndarray:
+    """肤色掩膜:RGB 规则与 YCbCr 规则须同时满足(单独任一条都会把米色/泥土判成肤色)。"""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    mx, mn = rgb.max(2), rgb.min(2)
+    rgb_rule = (
+        (r > 95)
+        & (g > 40)
+        & (b > 20)
+        & ((mx - mn) > 15)
+        & (np.abs(r - g) > 15)
+        & (r > g)
+        & (r > b)
+    )
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b
+    cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b
+    ycc = (
+        (cr >= 133)
+        & (cr <= 173)
+        & (cb >= _SKIN_CB_MIN)
+        & (cb <= 127)
+        & (y > 60)
+    )
+    return rgb_rule & ycc
+
+
+def _skin_regions(rgb) -> list[tuple[int, int, int, int]]:
+    """单帧肤色区域:肤色掩膜 -> 块连通 -> 填充率/纹理/亮度筛选 -> 外扩,返回矩形框。
+
+    像素分布判据(填充率、灰度梯度、亮度标准差)用来把「米色建筑、泥土」这类
+    颜色像皮肤但呈斑驳纹理的大面积背景排除掉,只留下成片平滑的肤色区域。
+    """
+    h, w = rgb.shape[:2]
+    m = _skin_mask(rgb)
+    lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    grad = np.zeros_like(lum)
+    grad[:, :-1] += np.abs(np.diff(lum, axis=1))
+    grad[:-1, :] += np.abs(np.diff(lum, axis=0))
+    mx_ch = rgb.max(2).astype(np.float64)
+    sat = np.where(mx_ch > 0, (mx_ch - rgb.min(2)) / np.maximum(mx_ch, 1.0), 0.0)
+    b = _SKIN_BLOCK
+    gh, gw = h // b, w // b
+    if not gh or not gw:
+        return []
+    grid = (
+        m[: gh * b, : gw * b].reshape(gh, b, gw, b).sum(axis=(1, 3))
+        >= _SKIN_BLOCK_FRAC * b * b
+    )
+    seen = np.zeros_like(grid)
+    boxes: list[tuple[int, int, int, int]] = []
+    for sy in range(gh):
+        for sx in range(gw):
+            if not grid[sy, sx] or seen[sy, sx]:
+                continue
+            seen[sy, sx] = True
+            stack = [(sy, sx)]
+            cells = []
+            while stack:
+                cy, cx = stack.pop()
+                cells.append((cy, cx))
+                for ny, nx in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                    if 0 <= ny < gh and 0 <= nx < gw and grid[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            y0 = min(c[0] for c in cells) * b
+            y1 = (max(c[0] for c in cells) + 1) * b
+            x0 = min(c[1] for c in cells) * b
+            x1 = (max(c[1] for c in cells) + 1) * b
+            sub = m[y0:y1, x0:x1]
+            area = int(sub.sum())
+            if area < _SKIN_MIN_AREA_FRAC * w * h:
+                continue
+            bh, bw = y1 - y0, x1 - x0
+            if bw * bh > _SKIN_MAX_BOX_FRAC * w * h:
+                continue
+            if area / (bw * bh) < _SKIN_MIN_FILL:
+                continue
+            g_mean = float(grad[y0:y1, x0:x1][sub].mean())
+            if g_mean < _SKIN_MIN_GRAD or g_mean > _SKIN_MAX_GRAD:
+                continue
+            if float(lum[y0:y1, x0:x1][sub].mean()) > _SKIN_MAX_LUM:
+                continue
+            if float(lum[y0:y1, x0:x1][sub].std()) > _SKIN_MAX_LUM_STD:
+                continue
+            if float(sat[y0:y1, x0:x1][sub].mean()) > _SKIN_MAX_SAT:
+                continue
+            mx_ = max(_SKIN_MIN_MARGIN, int(_SKIN_MARGIN * bw))
+            my_ = max(_SKIN_MIN_MARGIN, int(_SKIN_MARGIN * bh))
+            boxes.append(
+                (
+                    max(0, x0 - mx_),
+                    max(0, y0 - my_),
+                    min(w, x1 + mx_) - max(0, x0 - mx_),
+                    min(h, y1 + my_) - max(0, y0 - my_),
+                )
+            )
+    return boxes
+
+
+def _rect_overlap(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> int:
+    """两矩形相交面积(不相交为 0)。"""
+    return max(0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0])) * max(
+        0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1])
+    )
+
+
+def _rect_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+    """两矩形交并比(用于判断相邻采样秒是否还是同一个区域)。"""
+    inter = _rect_overlap(a, b)
+    if not inter:
+        return 0.0
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union else 0.0
+
+
+def _union_rect(a: tuple[int, int, int, int], b: tuple[int, int, int, int]):
+    x0, y0 = min(a[0], b[0]), min(a[1], b[1])
+    x1 = max(a[0] + a[2], b[0] + b[2])
+    y1 = max(a[1] + a[3], b[1] + b[3])
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def _sample_frames(video: Path, w: int, h: int, fps: float):
+    """按 fps 抽样解码视频,逐帧 yield 原始 RGB(单次 ffmpeg 进程,不落盘中间帧)。"""
+    cmd = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        str(video),
+        "-vf",
+        f"fps={fps:g}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-",
+    ]
+    n = w * h * 3
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout is not None
+    try:
+        idx = 0
+        while True:
+            buf = proc.stdout.read(n)
+            if len(buf) < n:
+                break
+            yield idx, np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 3).astype(np.int16)
+            idx += 1
+        err = proc.stderr.read().decode("utf-8", "replace").strip() if proc.stderr else ""
+        if idx == 0:
+            raise SystemExit(f"错误:无法解码视频 {video}\n{err}")
+    finally:
+        proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+        proc.wait()
+
+
+def detect_masks(video: Path, fps: float = 1.0, show_progress: bool = True) -> list[MaskEntry]:
+    """抽样检测肤色区域:连续命中的采样秒按空间邻接合并为区间条目(与 masks.json 同构)。"""
+    if not video.exists():
+        raise SystemExit(f"错误:视频不存在:{video}")
+    w, h = video_size(video)
+    boxes_n: list[tuple[int, tuple[int, int, int, int]]] = []
+    edges: list[tuple[int, int]] = []
+    prev: list[int] = []
+    total = int(video_duration(video) * fps) if show_progress else 0
+    bar = None
+    if show_progress:
+        from tqdm import tqdm
+
+        bar = tqdm(total=total, unit="帧", desc="自动去人检测")
+    for idx, rgb in _sample_frames(video, w, h, fps):
+        cur: list[int] = []
+        for box in _skin_regions(rgb):
+            boxes_n.append((idx, box))
+            cur.append(len(boxes_n) - 1)
+        for i in cur:
+            for j in prev:
+                if _rect_iou(boxes_n[i][1], boxes_n[j][1]) >= _SKIN_TRACK_IOU:
+                    edges.append((i, j))
+        prev = cur
+        if bar is not None:
+            bar.update(1)
+    if bar is not None:
+        bar.close()
+    return _merge_tracks(boxes_n, edges, 1.0 / fps, (w, h))
+
+
+def _merge_tracks(
+    boxes_n: list[tuple[int, tuple[int, int, int, int]]],
+    edges: list[tuple[int, int]],
+    step: float,
+    frame_wh: tuple[int, int],
+) -> list[MaskEntry]:
+    """把逐秒检出的框按时间相邻 + 空间相交聚成区间条目(避免逐秒碎片)。
+
+    合并后的外接矩形一旦超过整帧一半,判为「跨半屏」的成片误覆盖而丢弃(宁可漏检)。
+    """
+    frame_area = frame_wh[0] * frame_wh[1]
+    parent = list(range(len(boxes_n)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for a, b in edges:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+    groups: dict[int, list[int]] = {}
+    for i in range(len(boxes_n)):
+        groups.setdefault(find(i), []).append(i)
+    entries: list[MaskEntry] = []
+    for idxs in groups.values():
+        first = min(boxes_n[i][0] for i in idxs)
+        last = max(boxes_n[i][0] for i in idxs)
+        rect = boxes_n[idxs[0]][1]
+        for i in idxs[1:]:
+            rect = _union_rect(rect, boxes_n[i][1])
+        if rect[2] * rect[3] > _SKIN_MAX_ENTRY_FRAC * frame_area:
+            continue
+        entries.append(
+            MaskEntry(
+                start=first * step,
+                end=(last + 1) * step,
+                x=rect[0],
+                y=rect[1],
+                w=rect[2],
+                h=rect[3],
+                effect=_SKIN_EFFECT,
+            )
+        )
+    return sorted(entries, key=lambda m: (m.start, m.x, m.y))
 
 
 def picker(video: Path, masks_path: Path | None = None) -> None:

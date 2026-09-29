@@ -269,6 +269,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="打码清单(默认 <视频工作目录>/masks.json)",
     )
+    m.add_argument(
+        "--auto",
+        action="store_true",
+        help="自动去人:用肤色+像素分布检测真人肤色区域,结果写到 <工作目录>/.jpsub/masks.auto.json(不进入选取器、不改手工 masks.json)",
+    )
 
     ma = sub.add_parser("maskapply", help="把 masks.json 的打码应用到视频")
     ma.add_argument("video", type=Path)
@@ -1501,9 +1506,20 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
         _status(args)
         return None
     if args.command == "mask":
-        from .mask import picker
+        from .mask import auto_masks_path, detect_masks, picker, save_masks
 
-        picker(_video_arg(args.video), args.masks)
+        video = _video_arg(args.video)
+        if args.auto:  # 自动去人:只写独立文件,手工 masks.json 保持不动
+            entries = detect_masks(video)
+            out = args.masks or auto_masks_path(video)
+            save_masks(entries, out)
+            print(
+                f"自动去人:检出 {len(entries)} 条覆盖 -> {out}"
+                "(人工复核后用 maskapply 应用,如:jpsub maskapply <视频> "
+                f"{out.name})"
+            )
+            return None
+        picker(video, args.masks)
         return None
     if args.command == "maskapply":
         from .mask import apply_masks, default_masks_path
