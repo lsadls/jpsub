@@ -17,7 +17,7 @@
 
 合计 3500 次/月。webimage 接口已移除，不属于本能力。
 
-## Requirement: 逐帧识别接口顺序
+## Requirement: per-frame-endpoint-order 逐帧识别接口顺序
 
 `_ENDPOINTS`（`_run_b64` 使用）按以下顺序尝试，单个接口额度用尽（error 17/19）自动切换下一个，QPS 超限（18）短暂等待重试：
 
@@ -33,7 +33,7 @@
 - AND 兜底顺序依次为 `accurate_general`、`general_basic`、`general`
 - AND `webimage` 不在任何尝试路径中
 
-## Requirement: 批量拼接识别接口顺序
+## Requirement: batch-endpoint-order 批量拼接识别接口顺序
 
 `_BATCH_ENDPOINTS`（多帧合并识别使用）按以下顺序尝试，位置版（`has_pos=True`）按行 y 坐标切分，无位置版按分隔带编号行切分：
 
@@ -49,7 +49,7 @@
 - AND 兜底顺序依次为 `accurate_basic`、`general`、`general_basic`
 - AND `webimage` 不在任何尝试路径中
 
-## Requirement: 无 webimage 残留
+## Requirement: no-webimage-residue 无 webimage 残留
 
 `jpsub/ocr.py` 全文（代码、注释、docstring）不包含 `webimage`；类 docstring 的接口与额度说明只列上表 4 个接口，合计 3500 次/月。
 
@@ -59,7 +59,7 @@
 - THEN 匹配数为 0
 - AND docstring 中的额度说明与上表一致
 
-## Requirement: 文档同步
+## Requirement: docs-consistency 文档同步
 
 项目文档（AGENTS.md/jpsub.md、doc/ 相关页、changelog.md）中百度 OCR 的接口与额度描述与实现一致：不出现"4500 次/月"，不提及 webimage。
 

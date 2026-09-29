@@ -46,3 +46,13 @@ masks.json 为 JSON 数组，每条含起止秒、像素坐标与效果，可直
 ```
 
 > 旧版的 `masks.txt` 文本格式仍能自动识别读取，无需手动转换。
+
+## 自动打码敏感汉字
+
+`jpsub mask output/sm43168834.mp4 --sensitive` 会按敏感词表扫描工作目录里已有的 OCR 原文（`.jpsub/segments.json`），把命中画面原文的时间段对应的敏感词自动框出来，结果写 `.jpsub/masks.sensitive.json`（与手工 `masks.json` 独立，互不覆盖），再用 `jpsub maskapply <视频> .jpsub/masks.sensitive.json` 应用即可。该开关非交互，不会打开选取器；命令总在 OCR 之后执行，复用已有原文，不额外做全量逐帧 OCR。
+
+- `--sensitive-words <path>`：指定敏感词表文件（每行一词，`#` 起始为注释）；不指定时依次取工作目录 `sensitive.txt`、程序目录 `sensitive.txt`，都没有则用内置默认词表（`虐待`、`調教`、`肛門` 等，见 `jpsub/sensitive.py` 的 `DEFAULT_WORDS`）。
+- `--sensitive-pad <秒>`：命中段的打码时间区间向两端外扩的秒数，默认 `0.5`。
+- `--sensitive-locate auto|ocr|algo`：敏感词定位方式。`auto`（默认）优先用百度 OCR 含位置版接口（`accurate_general`、`general`）取行框切出整词框；含位置版额度/可用性用尽时自动降级为算法定位（复用主流程的文字掩膜做水平投影检测文字行，按行宽容量对应原文各行、再按字符序号比例切框，对应不上就漏框不误盖）。`ocr` 强制只用含位置版；`algo` 强制只用算法定位。
+
+敏感判定只依据词表，只匹配画面原文，不对画面里的中文译文或普通文字打码；遮挡效果为 `color:000000`、`vol` 为 `1.0`，与手工基线一致，产出文件可人工增删改。

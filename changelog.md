@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29 (10)
+
+### 新功能
+
+- **敏感汉字自动打码**：`jpsub mask <视频> --sensitive` 按敏感词表扫描工作目录已有的 OCR 原文（`.jpsub/segments.json`），自动把画面原文命中敏感词的字幕段框成遮挡条目，写入独立文件 `.jpsub/masks.sensitive.json`（不触碰手工 `masks.json`），由既有 `jpsub maskapply` 应用。定位优先用百度 OCR 含位置版接口（`accurate_general`/`general`，每个命中段只发一次请求），含位置版额度/可用性用尽时自动降级为算法定位（复用主流程文字掩膜做水平投影检测文字行，按行宽容量对应原文各行、再按字符序号比例切框）；新增 `--sensitive-words`（词表文件）、`--sensitive-pad`（时间外扩，默认 0.5s）、`--sensitive-locate auto|ocr|algo`（定位方式）。词表默认内置（`jpsub/sensitive.py` 的 `DEFAULT_WORDS`，含参考片画面实际出现的变体写法：`雄堕ち`/`雄膣`/`淫獣`/`ケツマンコ`/`デカマラ`/`性処理`/`性欲`/`露出`/`股間`/`媚薬` 等），也可用工作目录 `sensitive.txt` 替换。
+
 ## 2026-09-29 (9)
 
 ### 优化
