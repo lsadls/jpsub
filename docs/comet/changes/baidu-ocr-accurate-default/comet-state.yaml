@@ -1,0 +1,170 @@
+schema: comet.native.v4
+name: baidu-ocr-accurate-default
+language: zh-CN
+phase: build
+status: active
+state_version: 7
+brief: brief.md
+document_constraints_version: 1
+shape_confirmation_hash: 29484b58020221ef9a412d2b8e6f05dc8941869458fb8d903b11a4949ef14bf9
+spec_changes:
+  - capability: baidu-ocr
+    operation: create
+    source: specs/baidu-ocr/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: repairing
+  goal_cycle: 1
+  iteration: 2
+  attempt: 0
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: submit-builder-candidate
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "A1: 逐帧识别（`BaiduOcrEngine._run_b64`）按 `accurate_basic` →
+      `accurate_general` → `general_basic` → `general` 的顺序尝试接口，`webimage`
+      不在列表中。"
+    result: pending
+    reason: null
+  - id: A2
+    source: brief.md
+    text: "A2: 批量拼接识别（`BaiduOcrEngine` 的批量兜底链）按 `accurate_general` →
+      `accurate_basic` → `general` → `general_basic` 的顺序尝试接口，`webimage` 不在列表中。"
+    result: pending
+    reason: null
+  - id: A3
+    source: brief.md
+    text: "A3: `jpsub/ocr.py` 全文不再出现 `webimage`（含代码、注释与 docstring），接口额度说明与剩余 4
+      个接口一致（合计 3500 次/月）。"
+    result: pending
+    reason: null
+  - id: A4
+    source: brief.md
+    text: "A4: 项目文档中关于百度 OCR 接口/额度的描述与实现一致（不再宣传 4500 次/月，不再提及 webimage）。"
+    result: pending
+    reason: null
+  - id: A5
+    source: specs/baidu-ocr/spec.md
+    text: 逐帧高精度优先 - WHEN 逐帧识别发起百度 OCR 请求且所有接口均有剩余额度 - THEN 首个尝试的接口为 `accurate_basic`
+      - AND 兜底顺序依次为 `accurate_general`、`general_basic`、`general` - AND
+      `webimage` 不在任何尝试路径中
+    result: pending
+    reason: null
+  - id: A6
+    source: specs/baidu-ocr/spec.md
+    text: 批量高精度优先 - WHEN 批量拼接识别发起百度 OCR 请求且所有接口均有剩余额度 - THEN 首个尝试的接口为
+      `accurate_general` - AND 兜底顺序依次为
+      `accurate_basic`、`general`、`general_basic` - AND `webimage` 不在任何尝试路径中
+    result: pending
+    reason: null
+  - id: A7
+    source: specs/baidu-ocr/spec.md
+    text: 代码与说明一致 - WHEN 在 `jpsub/ocr.py` 中搜索 `webimage` - THEN 匹配数为 0 - AND
+      docstring 中的额度说明与上表一致
+    result: pending
+    reason: null
+  - id: A8
+    source: specs/baidu-ocr/spec.md
+    text: 文档与实现一致 - WHEN 在项目文档中搜索百度 OCR 额度描述 - THEN 无"4500 次/月"与 webimage 表述 - AND
+      额度总数描述为 3500 次/月
+    result: pending
+    reason: null
+builder_handoff:
+  candidate_id: a84b8774-2cf3-48c7-9ab2-40172f331bd2
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:50fdd375-ce73-41ea-8497-e59db3edf4a0
+  iteration: 1
+  summary:
+    text: 百度 OCR 改为高精度默认并移除 webimage：jpsub/ocr.py 逐帧链改为
+      accurate_basic→accurate_general→general_basic→general，批量链改为
+      accurate_general→accurate_basic→general→general_basic，删除两处 webimage
+      条目及注释，docstring 额度改为合计 3500 次/月；jpsub/cli.py 两处 OCR 消耗提示
+      4500→3500；docs/comet/faq.md、docs/comet/perf.md、changelog.md 额度描述同步为 3500
+      次/月。覆盖验收 A1-A4。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+  checks:
+    - name:
+        text: import-check
+        truncated: false
+      result: passed
+      note:
+        text: uv run python -c 'import jpsub.ocr, jpsub.cli' 输出 import-ok
+        truncated: false
+    - name:
+        text: grep-webimage-ocr
+        truncated: false
+      result: passed
+      note:
+        text: grep -c webimage jpsub/ocr.py 返回 0
+        truncated: false
+    - name:
+        text: grep-docs-leftovers
+        truncated: false
+      result: passed
+      note:
+        text: grep jpsub/docs/changelog 中 4500 次/月 与 webimage 均无匹配（change 目录除外）
+        truncated: false
+    - name:
+        text: endpoint-order-review
+        truncated: false
+      result: passed
+      note:
+        text: 核对 _ENDPOINTS 与 _BATCH_ENDPOINTS 顺序符合 A1/A2
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: IDE 用户规则 .trae/rules/jpsub.md 中仍有『4500次/月』描述，该文件不存在于仓库磁盘，无法在本 change 内修改
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-29T12:49:37.035Z
+blockers: []
+verification: null
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 独立复核通过：逐帧/批量兜底链顺序与 webimage 移除、docstring 与文档 3500 次/月
+        文案全部与验收一致，模块可导入（import-ok）
+      truncated: false
+    completed_at: 2026-09-29T12:55:46.746Z
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: 实现有大量改动，需要更新文档
+      truncated: false
+    completed_at: 2026-09-29T13:24:49.601Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pending
+verification_report: null
+archived: false
+created_at: 2026-09-29T12:28:28.507Z

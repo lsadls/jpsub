@@ -58,7 +58,7 @@ MAX_RUN = 10
 SIMILARITY = 0.85
 
 # 翻译:每次请求翻译的句数(实际每批还会按字符总量自动收缩)
-BATCH_SIZE = 10
+BATCH_SIZE = 30
 BATCH_CHAR_TARGET = 1500     # 每批翻译的字符总量上限,长句自动减少批内句数
 # 翻译并发数不用配:按待译总字数自动计算(3792字→16、5230字→24,钳 8~32)
 
@@ -66,10 +66,10 @@ BATCH_CHAR_TARGET = 1500     # 每批翻译的字符总量上限,长句自动减
 REASONING_EFFORT = "none"    # 关闭推理模型思考,建议 "none" 或 "low";留空=不发送该参数(部分端点不认会报错)
 HISTORY_KEEP = 3             # 翻译对话只保留最近几轮历史(0=全保留)
 PROMPT_FILE = ""             # 翻译提示词文件,留空用内置默认;支持 {src}/{tgt}/{punct} 占位
-GLOSSARY_FILE = "~/.jpsub/glossary.txt"  # 默认名词对照表路径(工作目录 glossary.txt 与 --glossary 优先级更高,加载顺序见 cli.md 第 13 节)
+GLOSSARY_FILE = "glossary.txt"  # 默认名词对照表路径(工作目录 glossary.txt 与 --glossary 优先级更高,加载顺序见 cli.md 第 13 节)
 
 # ASS 字幕样式(位置交给播放器默认处理)
-FONT = "Noto Sans CJK SC"  # 字体
+FONT = "微软雅黑"  # 字体
 FONT_SIZE = 20  # 字号
 MAX_CHARS = 20  # 每行最大字数(超出折行)
 OUTLINE_COLOR = (255, 165, 0)  # 描边颜色(RGB,当前为橙色)

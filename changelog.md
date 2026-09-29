@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-29 (9)
+
+### 优化
+
+- **百度 OCR 高精度优先**：逐帧兜底与拼接批量接口均改为高精度优先（`accurate_basic`/`accurate_general` 先于 `general_basic`/`general`），提高小字/复杂画面识别质量；移除不支持 `language_type` 的 `webimage` 接口，免费总额度 4500 → 3500 次/月，提示文案同步更新。
+
 ## 2026-09-28 (8)
 
 ### 优化
@@ -55,7 +61,7 @@
 ### 破坏性变更：OCR 改为在线服务
 
 - **移除本地 PaddleOCR**：不再内置 paddleocr/paddlepaddle 模型（依赖已从 pyproject 删除，`models/` 目录不再需要），OCR 改为调用在线 API——`OCR_PROVIDER = "baidu"`（默认，百度智能云通用文字识别，`BAIDU_OCR_API_KEY/SECRET_KEY`，`OCR_LANGUAGE="JAP"` 日文）或 `"openai"`（OpenAI 兼容视觉 API，`OCR_MODEL` 必填如 qwen-vl-plus，KEY/BASE 留空回退翻译用的配置）。识别精度显著提升，但需联网与账号。
-- **百度 OCR 免费额度管理**：标准接口共 4500 次/月，已用次数记录在 `~/.jpsub/baidu_ocr_state.json`（月初自动重置）；某接口额度用尽自动切换下一个可用接口。
+- **百度 OCR 免费额度管理**：接口共 3500 次/月，默认高精度接口优先，已用次数记录在 `~/.jpsub/baidu_ocr_state.json`（月初自动重置）；某接口额度用尽自动切换下一个可用接口。
 - **识别质量优化**：小图 2 倍放大后再送识别（`OCR_UPSCALE`，百度对小字<20px 易把假名误判成汉字，`--crop 1` 全帧时字幕只占一小块尤其明显）；多帧拼接长图统一缩放（宽度上限 2560px）。
 
 ### 新功能

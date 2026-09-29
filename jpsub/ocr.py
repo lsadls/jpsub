@@ -81,24 +81,22 @@ class BaiduOcrEngine:
     """百度通用文字识别:多个免费额度接口轮换,单个额度用尽自动切下一个。
 
     可用接口及月额度(同一个 AK/SK):
-    - general_basic    标准版        1000 次/月
-    - webimage         网络图片识别  1000 次/月
-    - general          标准含位置版  1000 次/月
     - accurate_basic   高精度版      1000 次/月
     - accurate_general 高精度含位置  500 次/月
-    共 4500 次/月;已用尽接口记录在 ~/.jpsub/baidu_ocr_state.json,月初自动重置。
+    - general_basic    标准版        1000 次/月
+    - general          标准含位置版  1000 次/月
+    共 3500 次/月;已用尽接口记录在 ~/.jpsub/baidu_ocr_state.json,月初自动重置。
     """
 
     name = "baidu"
 
     _TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
-    # 逐帧兜底接口(按优先级;webimage 不支持 language_type 会忽略 JAP,放最后)
+    # 逐帧兜底接口(按优先级,高精度优先)
     _ENDPOINTS = (
-        "general_basic",
-        "general",
         "accurate_basic",
         "accurate_general",
-        "webimage",
+        "general_basic",
+        "general",
     )
     _token: str = ""
     _token_expire: float = 0.0
@@ -114,11 +112,10 @@ class BaiduOcrEngine:
     _MAX_W = 2560      # 拼接图宽度上限(留出小图 2 倍放大的空间)
     # 拼接批量接口:位置版按行 y 坐标切分,无位置版按分隔带编号行切分
     _BATCH_ENDPOINTS = (
-        ("general", True),           # 标准含位置版 1000/月
-        ("general_basic", False),    # 标准版 1000/月
         ("accurate_general", True),  # 高精度含位置版 500/月
         ("accurate_basic", False),   # 高精度版 1000/月
-        ("webimage", False),         # 网络图片识别 1000/月(不支持 language_type,放最后)
+        ("general", True),           # 标准含位置版 1000/月
+        ("general_basic", False),    # 标准版 1000/月
     )
 
     @classmethod

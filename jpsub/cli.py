@@ -504,7 +504,7 @@ def _ocr_many(engine, paths: list[Path], quiet: bool = False, on_item=None) -> l
         )
         rep.close()
         if _ocr_mod.REQUESTS:
-            print(f"OCR 消耗 {_ocr_mod.REQUESTS} 次请求(百度月额度 4500 次/月)")
+            print(f"OCR 消耗 {_ocr_mod.REQUESTS} 次请求(百度月额度 3500 次/月)")
         return out
     out: list[str] = []
     for i, p in enumerate(paths):
@@ -514,7 +514,7 @@ def _ocr_many(engine, paths: list[Path], quiet: bool = False, on_item=None) -> l
         rep.line(f"OCR {i + 1}/{n}")
     rep.close()
     if _ocr_mod.REQUESTS:
-        print(f"OCR 消耗 {_ocr_mod.REQUESTS} 次请求(百度月额度 4500 次/月)")
+        print(f"OCR 消耗 {_ocr_mod.REQUESTS} 次请求(百度月额度 3500 次/月)")
     return out
 
 

@@ -26,7 +26,7 @@
 ```
 .venv
 jpsub
-settings.py        ← 你的 AI 配置(可选,没有就用 bin 里的默认值)
+settings.py        ← 你的 AI 配置(可选,没有就用程序内置默认值)
 ffmpeg.exe
 ffprobe.exe
 yt-dlp.exe

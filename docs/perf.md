@@ -28,7 +28,7 @@
 | 批失败二分 | `ai.translate_texts_parallel._flush` | 整批被拒后对半拆重试,拒译请求不计费,越拆越便宜 |
 | 毒句预筛单发 | `_run_group` | 命中 glossary 词条的句子先单发,不连累整批 |
 | 失败句落盘 | 工作目录 `translate-fails.txt` | 一句一行,提取关键词加进 glossary.txt |
-| OCR 计数 | `ocr.REQUESTS` | OCR 结束打印 `OCR 消耗 N 次请求(百度月额度 4500 次/月)`,只计成功计费请求 |
+| OCR 计数 | `ocr.REQUESTS` | OCR 结束打印 `OCR 消耗 N 次请求(百度月额度 3500 次/月)`,只计成功计费请求 |
 | token 汇报 | `ai._USAGE` | 翻译结束打印 `token 消耗: 命中X 未命中Y 输出Z ≈¥N` |
 
 ## 规律备忘
