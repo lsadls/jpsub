@@ -902,8 +902,9 @@ def _render(args) -> Path:
         if not getattr(args, "batch", False):
             print("没有译文,改用日文原文生成字幕")
         trs = [s.text for s in segs]
+    style_conf = ass.read_style(work)  # 工作目录样式:edit 页设置,命令行与主页共用
     if getattr(args, "bcc", False):
-        ass.write_bcc(segs, trs, out)
+        ass.write_bcc(segs, trs, out, style_conf=style_conf)
     else:
         ass.write_ass(
             segs,
@@ -911,6 +912,7 @@ def _render(args) -> Path:
             out,
             font=args.font,
             font_size=args.font_size,
+            style_conf=style_conf,
         )
     if not getattr(args, "batch", False):
         print(f"完成:{out}")

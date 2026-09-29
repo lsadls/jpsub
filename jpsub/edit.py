@@ -6,7 +6,9 @@
 - 译文置空/删除行 = 删除该条字幕;`[[未译]]` 行橙色提示;
 - 可新增字幕(时间轴+文本);时间轴输入兼容 mm:ss / 秒数,保存时统一为军方时间键;
 - 「还原改动」从 OCR 原始备份 segments.orig.json 一键恢复;
-- 「生成字幕」按钮等价于 `jpsub render <工作目录>`。
+- 「生成字幕」按钮等价于 `jpsub render <工作目录>`;
+- 「字幕样式」组设置文字颜色/描边颜色/描边宽度/位置,改动即存工作目录
+  `.jpsub/style.json`,生成字幕、烧录、主页烧录与命令行 render 共用。
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import json
 import threading
 from pathlib import Path
 
-from . import handoff, utils
+from . import ass, handoff, utils
 from .mask import frame_jpeg, video_duration
 from . import settings
 
@@ -50,6 +52,9 @@ tr.act{color:#8f8}
 .del{color:#f88;cursor:pointer}
 textarea.src,textarea.tr{overflow:hidden;resize:none;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
 .grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
+.sec{margin-top:10px}
+.st{display:block;color:#9ab;font-size:12px;font-weight:600;margin-bottom:3px}
+.hint{color:#888;font-size:12px}
 .src{color:#999}
 td:nth-child(1),th:nth-child(1){width:200px}
 tr.unt .tr{color:#f80}
@@ -70,36 +75,48 @@ input.tin{width:60px}
 <div id=left>
 <div id=vbox><video id=vid src="/video" controls style="width:100%" @@NOVID@@></video><div id=ov></div></div>
 <div id=tlbar><div id=tlwrap><div id=tl title="时间轴:点击色块跳到该句,拖动横向扫动定位"><div id=ph></div></div></div></div>
-<div style=margin-top:6px><button id=add>＋在当前时间新增字幕</button>
-<span class=grp style=margin-left:8px><button id=shiftl title=所有字幕整体前移输入的秒数(时间不能为负)>整体前移</button>
+<div class=sec><b class=st>时间轴与文本编辑</b>
+<div class=trow><button id=add>＋在当前时间新增字幕</button>
+<span class=grp><button id=shiftl title=所有字幕整体前移输入的秒数(时间不能为负)>整体前移</button>
 <input id=shifts value=1 style=width:60px title=秒数,支持小数>秒
 <button id=shiftr title=所有字幕整体后移输入的秒数>整体后移</button></span>
-<span class=grp style=margin-left:8px><input id=finds placeholder=查找 style=width:110px>
+<span class=grp><input id=finds placeholder=查找 style=width:110px>
 <input id=reps placeholder=替换为 style=width:110px>
 <label style=cursor:pointer title=同时替换原文列><input type=checkbox id=fincl>含原文</label>
-<button id=fr title=把所有译文(及勾选时的原文)中的查找内容替换为替换内容>全部替换</button></span></div>
-<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start">
-<span class=grp>
+<button id=fr title=把所有译文(及勾选时的原文)中的查找内容替换为替换内容>全部替换</button></span></div></div>
+<div class=sec><b class=st>翻译</b>
+<div class=trow><span class=grp>
 <button id=continue-tr title="翻译标为[[未译]]的句子,已译的跳过">续翻</button>
 <button id=force-tr title="重新翻译全部句子(含已译)">重翻</button>
 <label style=cursor:pointer><input type=checkbox id=longtr>长文</label>
-</span>
-<span class=grp><button id=save>保存</button><input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"> <label title="生成字幕的格式">格式:<input type=radio name=fmt value=bcc checked>bcc</label><label><input type=radio name=fmt value=ass>ass</label> <button id=render>生成字幕</button></span>
-<span class=grp>
-<button id=b2a>转换</button>
+</span></div></div>
+<div class=sec><b class=st>字幕样式(生成字幕与烧录共用)</b>
+<div class=trow>
+<label style=cursor:pointer title="字幕文字颜色">文字<input type=color id=scolor></label>
+<label style=cursor:pointer title="字幕描边颜色">描边<input type=color id=soutline></label>
+<label style=cursor:pointer title="0 = 无描边,最大 4">描边宽<input id=swidth class=tin type=number min=0 max=4 step=1></label>
+<label style=cursor:pointer title="字幕位置:底部居中或顶部居中">位置<select id=spos><option value=bottom>底部</option><option value=top>顶部</option></select></label>
+<button id=sreset title="恢复默认样式:白字、默认描边色、底部">默认</button>
+<span class=grp><label title="生成字幕的格式">格式:<input type=radio name=fmt value=bcc checked>bcc</label><label><input type=radio name=fmt value=ass>ass</label> <button id=render>生成字幕</button></span>
+</div>
+<span class=hint>改动即存到工作目录 .jpsub/style.json;生成字幕、烧录、主页烧录与命令行 render 共用</span></div>
+<div class=sec><b class=st>保存与备份</b>
+<div class=trow><button id=save>保存</button>
+<input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"></div></div>
+<div class=sec><b class=st>字幕文件与烧录</b>
+<div class=trow><button id=b2a>转换</button>
 <input type=file id=convpick accept=".bcc,.ass" style=display:none>
 <button onclick=$('convpick').click() title="选择字幕文件(.bcc/.ass),供转换和烧录使用">选字幕…</button>
 <input id=convf type=hidden value="">
-@@BURN@@
-</span>
-</div>
-<div class=grp style="flex-direction:column;align-items:stretch;width:300px;margin-top:6px">
+@@BURN@@</div></div>
+<div class=sec><b class=st>还原与备份</b>
+<div class=grp style="flex-direction:column;align-items:stretch;width:300px">
 <span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
 <input id=bksearch placeholder=搜索备份 style="width:100%;margin:2px 0">
 <select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到 OCR 原始"></select>
-</div>
+</div></div>
 <div id=msg></div>
-<span style=color:#888>译文留空 = 删除该字幕;保存时未列出/已删的行不写回</span>
+<span class=hint>译文留空 = 删除该字幕;保存时未列出/已删的行不写回</span>
 </div>
 <div id=right>
 <div id=vhead><span>时间</span><span>原文</span><span>译文</span></div>
@@ -107,7 +124,7 @@ input.tin{width:60px}
 </div>
 </div>
 <p>点时间旁的 ▶ 跳到该句开头;时间栏「←起」「止→」把起止设为当前预览时间,键盘 ←/→ 或 A/D ±1秒(Shift ±0.1秒,Alt ±5秒),W/S 或 PageUp/PageDown ±10秒;Q 或空格播放/暂停,C 新增字幕,Z/X 设当前字幕的开始/结束;「✕」删除该行字幕;「↺」把该句标为未译并清掉缓存旧译文。
-「续翻」只翻译未译句子,「重翻」全部重翻,勾「长文」则按「。」拆成单句逐句翻(单句翻坏不连累整条),且每句展开为独立字幕条目(时间轴按句长比例估算,可编辑,保存后永久拆分,单句译文写入缓存);预览画面上实时叠加显示当前时间段字幕;翻完可点「生成字幕」;「转换」把所选 .bcc/.ass 互转,「烧录」把字幕烧进视频;「还原改动」从备份列表选中一份恢复。</p>
+「续翻」只翻译未译句子,「重翻」全部重翻,勾「长文」则按「。」拆成单句逐句翻(单句翻坏不连累整条),且每句展开为独立字幕条目(时间轴按句长比例估算,可编辑,保存后永久拆分,单句译文写入缓存);预览画面上实时叠加显示当前时间段字幕;「字幕样式」组设置文字颜色、描边颜色、描边宽度(0 = 无描边)与位置(底部/顶部),改动即存到工作目录 .jpsub/style.json,「生成字幕」「烧录进视频」以及主页烧录、命令行 render 都用这份样式;翻完可点「生成字幕」;「转换」把所选 .bcc/.ass 互转,「烧录」把字幕烧进视频;「还原改动」从备份列表选中一份恢复。</p>
 <script>
 const DUR=@@DUR@@,HASVID=@@HASVID@@;
 if(HASVID)document.getElementById('vid').playbackRate=@@RATE@@;
@@ -376,11 +393,33 @@ async function startTr(force){
 }
 $('continue-tr').onclick=()=>startTr(false);
 $('force-tr').onclick=()=>startTr(true);
+// ===== 字幕样式:控件改动即存到工作目录,与生成字幕/烧录/主页/命令行共用 =====
+const STYLE_DEF=@@STYLE_DEFAULT@@;
+function stylePayload(){return{color:$('scolor').value,outline_color:$('soutline').value,
+  outline_width:+$('swidth').value,position:$('spos').value}}
+function applyStylePreview(){  // 预览叠加文字跟着所选颜色与位置走
+  const ov=$('ov'),top=$('spos').value==='top';
+  ov.style.color=$('scolor').value;
+  ov.style.top=top?'4%':'auto';ov.style.bottom=top?'auto':'4%';
+}
+function fillStyle(s){
+  $('scolor').value=s.color;$('soutline').value=s.outline_color;
+  $('swidth').value=s.outline_width;$('spos').value=s.position;applyStylePreview();
+}
+async function saveStyle(){
+  const j=await post2('/style',{style:stylePayload()});
+  if(!j.ok)msg.textContent='样式保存失败:'+j.err;else fillStyle(j.style);
+  return j.ok;
+}
+fillStyle(@@STYLE@@);
+$('scolor').oninput=applyStylePreview;
+['scolor','soutline','swidth','spos'].forEach(id=>$(id).onchange=saveStyle);
+$('sreset').onclick=()=>{fillStyle(STYLE_DEF);saveStyle();msg.textContent='已恢复默认字幕样式'};
 $('render').onclick=async()=>{
   if(!await save())return;
   msg.textContent='生成字幕中...';
   const fmt=document.querySelector('input[name=fmt]:checked').value;
-  const j=await post2('/render',{fmt});
+  const j=await post2('/render',{fmt,style:stylePayload()});
   msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
 };
 $('restore').onclick=async()=>{
@@ -410,7 +449,7 @@ const burn=document.getElementById('burn');
 if(burn)burn.onclick=async()=>{
   if(!await save())return;
   burn.disabled=true;msg.textContent='烧录中(ffmpeg,需要一会儿)...';
-  const j=await post2('/burn',{file:$('convf')?$('convf').value.trim():''});
+  const j=await post2('/burn',{file:$('convf')?$('convf').value.trim():'',style:stylePayload()});
   burn.disabled=false;msg.textContent=j.ok?'完成:'+j.out:'失败:'+j.err;
 };
 function scrollList(){
@@ -597,30 +636,24 @@ def _find_video(work: Path) -> Path | None:
     return utils.find_video(work)
 
 
-def _make_ass_style(subs) -> None:
-    """给 SSAFile 配置与 ass.write_ass 相同的 Default 样式。"""
+def _make_ass_style(subs, style_conf: dict | None = None) -> None:
+    """给 SSAFile 配置与 ass.write_ass 相同的 Default 样式(含工作目录字幕样式)。"""
     import pysubs2
-
-    from . import settings
 
     style = pysubs2.SSAStyle()
     style.fontname = "Noto Sans CJK SC"
     style.fontsize = 54
-    style.primarycolor = pysubs2.Color(255, 255, 255, 0)
-    r, g, b = settings.OUTLINE_COLOR
-    style.outlinecolor = pysubs2.Color(r, g, b, 0)
-    style.outline = settings.OUTLINE_WIDTH
-    style.shadow = settings.SHADOW
+    ass._apply_style(style, style_conf or ass.default_style())
     subs.styles["Default"] = style
 
 
-def _bcc2ass(src: Path) -> Path:
+def _bcc2ass(src: Path, style_conf: dict | None = None) -> Path:
     """必剪 .bcc(JSON) → .ass,输出在源文件旁。"""
     import pysubs2
 
     data = json.loads(src.read_text(encoding="utf-8"))
     subs = pysubs2.SSAFile()
-    _make_ass_style(subs)
+    _make_ass_style(subs, style_conf)
     for ev in data.get("body", []):
         text = str(ev.get("content", "")).replace("\n", "\\N").strip()
         if not text:
@@ -778,7 +811,7 @@ class _Editor:
                         src = self._resolve_file(json.loads(body).get("file", ""))
                         ext = src.suffix.lower()
                         if ext == ".bcc":
-                            out = _bcc2ass(src)
+                            out = _bcc2ass(src, ass.read_style(editor.work))
                         elif ext == ".ass":
                             out = _ass2bcc(src)
                         else:
@@ -789,8 +822,15 @@ class _Editor:
                 elif self.path == "/render":
                     try:
                         b = json.loads(body) if body else {}
+                        editor.save_style(b.get("style"))
                         out = editor.run_render(bcc=b.get("fmt", "bcc") == "bcc")
                         utils.http_json(self, {"ok": True, "out": str(out)})
+                    except Exception as e:  # noqa: BLE001
+                        utils.http_json(self, {"ok": False, "err": str(e)})
+                elif self.path == "/style":
+                    try:
+                        style = editor.save_style(json.loads(body).get("style"))
+                        utils.http_json(self, {"ok": True, "style": style})
                     except Exception as e:  # noqa: BLE001
                         utils.http_json(self, {"ok": False, "err": str(e)})
                 elif self.path == "/restore":
@@ -828,11 +868,9 @@ class _Editor:
                         utils.http_json(self, {"ok": False, "err": str(e)})
                 elif self.path == "/burn":
                     try:
-                        f = ""
-                        try:
-                            f = str(json.loads(body).get("file", "") or "").strip()
-                        except Exception:  # noqa: BLE001
-                            pass
+                        b = json.loads(body) if body else {}
+                        editor.save_style(b.get("style"))
+                        f = str(b.get("file", "") or "").strip()
                         ass_file = self._resolve_file(f) if f else None
                         out = editor.run_burn(ass_file)
                         utils.http_json(self, {"ok": True, "out": str(out)})
@@ -853,6 +891,12 @@ class _Editor:
         args = cli.parse_args(argv)
         return cli._render(args)
 
+    def save_style(self, style: dict | None) -> dict:
+        """保存页面传来的字幕样式;style 为空时只读当前生效样式。"""
+        if style is None:
+            return ass.read_style(self.work)
+        return ass.save_style(self.work, style)
+
     def run_burn(self, ass_file: Path | None = None) -> Path:
         from . import cli
 
@@ -862,7 +906,11 @@ class _Editor:
             ass = self.run_render()  # 烧录始终用 ass(ffmpeg 需要)
         else:
             # 文件选择器指定的字幕:.bcc 先转 .ass,再直接烧录
-            ass = _bcc2ass(ass_file) if ass_file.suffix.lower() == ".bcc" else ass_file
+            ass = (
+                _bcc2ass(ass_file, self.save_style(None))
+                if ass_file.suffix.lower() == ".bcc"
+                else ass_file
+            )
         video = self.video
         masks = handoff.masks_path(self.work)
         if masks.is_file():  # 与 home「烧录」一致:先打码再烧字幕
@@ -883,6 +931,8 @@ def _render_page(p: _Editor) -> str:
         "@@NOVID@@": "" if p.video else "hidden",
         "@@HASVID@@": "true" if p.video else "false",
         "@@BURN@@": ('<button id=burn>烧录进视频</button>' if p.video else ""),
+        "@@STYLE@@": json.dumps(ass.read_style(p.work), ensure_ascii=False),
+        "@@STYLE_DEFAULT@@": json.dumps(ass.default_style(), ensure_ascii=False),
         "@@ROWS@@": json.dumps(
             [{k: r[k] for k in ("start", "end", "src", "text", "sents")} for r in p.rows()],
             ensure_ascii=False,

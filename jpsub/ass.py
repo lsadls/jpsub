@@ -1,15 +1,22 @@
 """生成外挂 ASS 字幕。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pysubs2
 
-from . import settings
+from . import handoff, settings
 from .segment import Segment
 
 import re as _re
 import unicodedata as _ud
+
+# 字幕样式:文字颜色/描边颜色/描边宽度/位置(底部、顶部居中)
+STYLE_COLOR = "#FFFFFF"          # 默认白字
+STYLE_OUTLINE_WIDTH_MAX = 4      # 描边宽度上限(0 = 无描边)
+STYLE_POSITIONS = ("bottom", "top")
+STYLE_POSITION_ALIGN = {"bottom": 2, "top": 8}  # ASS Alignment:2 底部居中,8 顶部居中
 
 # 渲染前把超长省略号截短:连续 6 个点(3 个「...」)及以上只留 2 个;全角「…」同理
 _DOT_RUN = _re.compile(r"\.{6,}|…{3,}")
@@ -95,6 +102,77 @@ def _wrap(text: str, max_chars: float) -> str:
     return "\\N".join(out)
 
 
+def _rgb_hex(rgb) -> str:
+    return "#%02X%02X%02X" % tuple(rgb)
+
+
+def _hex_rgb(value) -> tuple[int, int, int] | None:
+    """解析 #RRGGBB;非法返回 None。"""
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lstrip("#")
+    if _re.fullmatch(r"[0-9a-fA-F]{6}", s) is None:
+        return None
+    return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+
+def default_style() -> dict:
+    """默认字幕样式:白字,描边与阴影沿用 settings。"""
+    return {
+        "color": STYLE_COLOR,
+        "outline_color": _rgb_hex(settings.OUTLINE_COLOR),
+        "outline_width": int(settings.OUTLINE_WIDTH),
+        "position": "bottom",
+    }
+
+
+def normalize_style(data) -> dict:
+    """规整样式:非法颜色/位置回退默认,描边宽度钳制到 0-4。"""
+    style = default_style()
+    if not isinstance(data, dict):
+        return style
+    for key in ("color", "outline_color"):
+        rgb = _hex_rgb(data.get(key))
+        if rgb is not None:
+            style[key] = _rgb_hex(rgb)
+    width = data.get("outline_width")
+    if isinstance(width, (int, float)) and not isinstance(width, bool):
+        style["outline_width"] = max(0, min(STYLE_OUTLINE_WIDTH_MAX, int(width)))
+    if data.get("position") in STYLE_POSITIONS:
+        style["position"] = data["position"]
+    return style
+
+
+def read_style(work: Path) -> dict:
+    """读工作目录样式文件;缺失或损坏时回退默认。"""
+    path = handoff.style_path(work)
+    if not path.is_file():
+        return default_style()
+    try:
+        return normalize_style(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return default_style()
+
+
+def save_style(work: Path, data) -> dict:
+    """把样式写入工作目录(规整后落盘),返回实际生效的样式。"""
+    style = normalize_style(data)
+    path = handoff.style_path(work)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(style, ensure_ascii=False, indent=1), encoding="utf-8")
+    return style
+
+
+def _apply_style(style: pysubs2.SSAStyle, conf: dict) -> None:
+    r, g, b = _hex_rgb(conf["color"])
+    style.primarycolor = pysubs2.Color(r, g, b, 0)
+    r, g, b = _hex_rgb(conf["outline_color"])
+    style.outlinecolor = pysubs2.Color(r, g, b, 0)
+    style.outline = conf["outline_width"]
+    style.alignment = STYLE_POSITION_ALIGN[conf["position"]]
+    style.shadow = settings.SHADOW
+
+
 def write_ass(
     segments: list[Segment],
     translations: list[str],
@@ -102,10 +180,12 @@ def write_ass(
     *,
     font: str = "Noto Sans CJK SC",
     font_size: int = 54,
+    style_conf: dict | None = None,
 ) -> None:
     """把字幕段与译文写成 ASS;缺译文的段不显示(不用日文原文填补)。
     translations 与 segments 按下标一一对应(空串=跳过),不用文本做键,
-    避免重复原文段共用/覆盖译文。位置交给播放器默认处理。
+    避免重复原文段共用/覆盖译文。style_conf 为空时用默认样式(白字、
+    settings 描边、底部居中)。
 
     一条字幕整体显示为一行(长文模式的句子切分已保证粒度足够细)。
     """
@@ -113,11 +193,7 @@ def write_ass(
     style = pysubs2.SSAStyle()
     style.fontname = font
     style.fontsize = font_size
-    style.primarycolor = pysubs2.Color(255, 255, 255, 0)  # 白字
-    r, g, b = settings.OUTLINE_COLOR
-    style.outlinecolor = pysubs2.Color(r, g, b, 0)        # 描边(settings.OUTLINE_COLOR)
-    style.outline = settings.OUTLINE_WIDTH
-    style.shadow = settings.SHADOW
+    _apply_style(style, normalize_style(style_conf) if style_conf else default_style())
     subs.styles["Default"] = style
 
     for seg, text in zip(segments, translations):
@@ -139,11 +215,13 @@ def write_bcc(
     segments: list[Segment],
     translations: list[str],
     out_path: Path,
+    *,
+    style_conf: dict | None = None,
 ) -> None:
     """把字幕段与译文写成必剪 .bcc(JSON)。不做 ASS 式自动折行,译文里
-    最多保留一个换行(第一个 \\N 或换行符),其余丢弃。"""
-    import json
-
+    最多保留一个换行(第一个 \\N 或换行符),其余丢弃。bcc 无描边/位置
+    字段,只同步文字颜色到 font_color。"""
+    style = normalize_style(style_conf) if style_conf else default_style()
     body = []
     for seg, text in zip(segments, translations):
         if not text:
@@ -164,7 +242,7 @@ def write_bcc(
     # 字段对齐 B 站 CC 导出格式
     out_path.write_text(json.dumps({
         "font_size": 0.4,
-        "font_color": "#FFFFFF",
+        "font_color": style["color"],
         "background_alpha": 0.5,
         "background_color": "#9C27B0",
         "stroke": "none",
