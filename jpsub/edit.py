@@ -52,8 +52,8 @@ tr.act{color:#8f8}
 .del{color:#f88;cursor:pointer}
 textarea.src,textarea.tr{overflow:hidden;resize:none;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere}
 .grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
-.sec{margin-top:10px}
-.st{display:block;color:#9ab;font-size:12px;font-weight:600;margin-bottom:3px}
+.sec{margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px}
+.st{color:#9ab;font-size:12px;font-weight:600;white-space:nowrap}
 .hint{color:#888;font-size:12px}
 .src{color:#999}
 td:nth-child(1),th:nth-child(1){width:200px}
@@ -100,21 +100,20 @@ input.tin{width:60px}
 <span class=grp><label title="生成字幕的格式">格式:<input type=radio name=fmt value=bcc checked>bcc</label><label><input type=radio name=fmt value=ass>ass</label> <button id=render>生成字幕</button></span>
 </div>
 <span class=hint>改动即存到工作目录 .jpsub/style.json;生成字幕、烧录、主页烧录与命令行 render 共用</span></div>
-<div class=sec><b class=st>保存与备份</b>
-<div class=trow><button id=save>保存</button>
-<input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"></div></div>
+<div class=sec><b class=st>保存与还原</b>
+<button id=save>保存</button>
+<input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名">
+<div class=grp style="flex-direction:column;align-items:stretch;width:300px">
+<span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
+<input id=bksearch placeholder=搜索备份 style="width:100%;margin:2px 0">
+<select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到 OCR 原始"></select>
+</div></div>
 <div class=sec><b class=st>字幕文件与烧录</b>
 <div class=trow><button id=b2a>转换</button>
 <input type=file id=convpick accept=".bcc,.ass" style=display:none>
 <button onclick=$('convpick').click() title="选择字幕文件(.bcc/.ass),供转换和烧录使用">选字幕…</button>
 <input id=convf type=hidden value="">
 @@BURN@@</div></div>
-<div class=sec><b class=st>还原与备份</b>
-<div class=grp style="flex-direction:column;align-items:stretch;width:300px">
-<span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
-<input id=bksearch placeholder=搜索备份 style="width:100%;margin:2px 0">
-<select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到 OCR 原始"></select>
-</div></div>
 <div id=msg></div>
 <span class=hint>译文留空 = 删除该字幕;保存时未列出/已删的行不写回</span>
 </div>
