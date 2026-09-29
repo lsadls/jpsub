@@ -274,6 +274,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="自动去人:用肤色+像素分布检测真人肤色区域,结果写到 <工作目录>/.jpsub/masks.auto.json(不进入选取器、不改手工 masks.json)",
     )
+    m.add_argument(
+        "--sensitive",
+        action="store_true",
+        help="自动打码:对画面原文命中敏感词表的段自动生成掩膜(非交互),"
+        "结果写 <工作目录>/.jpsub/masks.sensitive.json",
+    )
+    m.add_argument(
+        "--sensitive-words",
+        type=Path,
+        default=None,
+        help="敏感词表文件(每行一词,# 注释);默认取 <工作目录>/sensitive.txt,"
+        "再取程序目录 sensitive.txt,都没有时用内置词表",
+    )
+    m.add_argument(
+        "--sensitive-pad",
+        type=float,
+        default=0.5,
+        help="命中段的打码区间向两端外扩的秒数(默认 0.5)",
+    )
+    m.add_argument(
+        "--sensitive-locate",
+        choices=("auto", "ocr", "algo"),
+        default="auto",
+        help="敏感词定位方式:auto=含位置版 OCR 优先、额度/可用性用尽降级算法(默认);"
+        "ocr=只用含位置版;algo=只用算法定位(不调用含位置版接口)",
+    )
 
     ma = sub.add_parser("maskapply", help="把 masks.json 的打码应用到视频")
     ma.add_argument("video", type=Path)
@@ -1508,6 +1534,7 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
         _status(args)
         return None
     if args.command == "mask":
+        from . import sensitive
         from .mask import auto_masks_path, detect_masks, picker, save_masks
 
         video = _video_arg(args.video)
@@ -1519,6 +1546,14 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
                 f"自动去人:检出 {len(entries)} 条覆盖 -> {out}"
                 "(人工复核后用 maskapply 应用,如:jpsub maskapply <视频> "
                 f"{out.name})"
+            )
+            return None
+        if args.sensitive:
+            sensitive.detect(
+                video,
+                words_file_path=args.sensitive_words,
+                pad=args.sensitive_pad,
+                locate=args.sensitive_locate,
             )
             return None
         picker(video, args.masks)

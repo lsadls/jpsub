@@ -117,6 +117,8 @@ class BaiduOcrEngine:
         ("general", True),           # 标准含位置版 1000/月
         ("general_basic", False),    # 标准版 1000/月
     )
+    # 含位置版接口(按优先级):仅这两个接口返回 location,供敏感词定位使用
+    _POS_ENDPOINTS = ("accurate_general", "general")
 
     @classmethod
     def _state_file(cls) -> Path:
@@ -253,6 +255,64 @@ class BaiduOcrEngine:
     def run_lines(self, image_path: Path) -> str:
         """screen 布局:多行文本按图片中的行用 '\\n' 拼回。"""
         return self.run(image_path)
+
+    def run_lines_pos(
+        self, image_path: Path
+    ) -> list[tuple[str, tuple[int, int, int, int]]] | None:
+        """含位置版识别:返回 [(行文本, (x, y, w, h))],坐标为原图像素。
+
+        只用含位置版接口(accurate_general -> general),不占用无位置版接口额度
+        (两者额度独立,普通识别仍走原接口)。两个接口都额度用尽/不可用时标记并
+        返回 None,由上层降级为算法定位;成功但无文字时返回空列表。
+        """
+        if not BaiduOcrEngine._token:
+            BaiduOcrEngine._load_state()
+        with Image.open(image_path) as im0:
+            im = text_boost(im0)
+            scale = 1.0
+            if im.width < 1600 and settings.OCR_UPSCALE:  # 小图放大改善小字识别
+                scale = 2.0
+                im = im.resize((im.width * 2, im.height * 2), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        for endpoint in self._POS_ENDPOINTS:
+            if endpoint in self._exhausted:
+                continue
+            for attempt in range(3):  # 网络/QPS 类错误重试 3 次
+                try:
+                    data = self._call(endpoint, b64)
+                except Exception:  # noqa: BLE001
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                code = data.get("error_code")
+                if code in (17, 19, 3):  # 额度用尽/接口不支持:标记后换下一个
+                    self._exhausted.add(endpoint)
+                    self._save_state()
+                    print(f"[baidu-ocr] {endpoint} 不可用({code}),切换下一个含位置版接口")
+                    break
+                if code is not None:
+                    time.sleep(2 * (attempt + 1))
+                    continue
+                rows: list[tuple[str, tuple[int, int, int, int]]] = []
+                for row in data.get("words_result", []):
+                    words = (row.get("words") or "").strip()
+                    loc = row.get("location") or {}
+                    if not words or not loc:
+                        continue
+                    rows.append(
+                        (
+                            words,
+                            (
+                                round(loc.get("left", 0) / scale),
+                                round(loc.get("top", 0) / scale),
+                                round(loc.get("width", 0) / scale),
+                                round(loc.get("height", 0) / scale),
+                            ),
+                        )
+                    )
+                return rows
+        return None  # 含位置版全部不可用:由上层降级为算法定位
 
     def run_many(
         self, image_paths: list[Path], *, lines: bool = False, on_item=None
