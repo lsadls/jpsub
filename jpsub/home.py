@@ -90,6 +90,10 @@ h3{margin:0 0 6px;border-bottom:1px solid #444;padding-bottom:4px}
 button{white-space:nowrap}
 .btns{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
 .grp{margin-top:12px;color:#aaa}
+.sec{margin-top:12px}
+.st{display:block;color:#9ab;font-size:12px;font-weight:600;margin-bottom:2px}
+.sec.danger{border:1px solid #733;border-radius:6px;padding:6px 8px;background:rgba(120,40,40,.12)}
+.sec.danger .st{color:#f88}
 .outbox{margin-top:6px;border:1px solid #444;border-radius:4px;background:#181818;padding:6px;max-height:45vh;overflow-y:auto}
 .outbox pre{margin:0;font:12px monospace;color:#9c9;white-space:pre-wrap}
 .job{padding:2px 4px;cursor:pointer}
@@ -103,6 +107,7 @@ button{white-space:nowrap}
 <div id=grid>
 <div class=pane>
 <h3>① 操作</h3>
+<div class=sec><b class=st>下载(网络)</b>
 <div class=row>
 <span class=lbl>sm号或URL</span>
 <input id=url type=text placeholder="如 sm43168834">
@@ -112,7 +117,8 @@ button{white-space:nowrap}
 <button onclick=cmd('download',['--download-only'])>仅下载</button>
 <button onclick=cmd('download',['--notrans'])>下载不翻译</button>
 <button onclick=cmd('download',['--burn'])>下载+烧录</button>
-</div>
+</div></div>
+<div class=sec><b class=st>本地视频</b>
 <div class=row>
 <span class=lbl>本地视频</span>
 <input id=vfile type=file accept=".mp4,.mkv,.webm,video/mp4,video/x-matroska,video/webm" style=display:none>
@@ -125,21 +131,34 @@ button{white-space:nowrap}
 <button onclick=cmd('run',['--notrans'])>OCR</button>
 <button onclick=cmd('run',['--force'])>重新OCR翻译</button>
 <button onclick=cmd('extract',['--force','--notrans'])>重新OCR</button>
-</div>
+</div></div>
+<div class=sec><b class=st>对选中项 · 预览与编辑</b>
 <div class=btns>
 <button onclick=cmd('edit',[])>编辑</button>
 <button onclick=cmd('mask',[])>打码</button>
 <button onclick=openCrop()>选择原视频字幕区域</button>
-<button onclick=cmd('burn',[])>烧录</button>
+</div></div>
+<div class=sec><b class=st>对选中项 · 产出</b>
+<div class=btns>
 <button onclick=cmd('render',[])>生成字幕</button>
+<button onclick=cmd('burn',[])>烧录</button>
+</div></div>
+<div class=sec><b class=st>对选中项 · 翻译</b>
+<div class=btns>
+<button onclick=cmd('translate',[])>续翻</button>
+<button onclick=cmd('translate',['--force'])>重翻</button>
+</div></div>
+<div class=sec><b class=st>对选中项 · 投稿与分享</b>
+<div class=btns>
 <button onclick=openUpload()>投稿</button>
 <button onclick=copyInfo()>复制info</button>
 <button onclick=copyTag()>复制tag</button>
-<button onclick=cmd('translate',[])>续翻</button>
-<button onclick=cmd('translate',['--force'])>重翻</button>
+</div></div>
+<div class="sec danger"><b class=st>对选中项 · 删除(不可恢复)</b>
+<div class=btns>
 <button onclick=delWork()>删除工作目录</button>
 <button onclick=delVid()>删除视频</button>
-</div>
+</div></div>
 <div class=row>
 <span class=lbl>自定义命令</span>
 <input id=ccmd type=text style="flex:1" placeholder="完整命令,如 download sm123 -v 720p -a best --download-only">
@@ -167,29 +186,34 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 </div>
 </div>
 <div style="color:#888;font-size:13px;line-height:2">
-<b style=color:#aaa>① 下载组</b><br>
+<b style=color:#aaa>① 下载(网络)</b><br>
 <b>下载并翻译</b> — 完整流水线:下载→抽帧→OCR→翻译→生成ASS<br>
 <b>仅下载</b> — --download-only,只下载视频到 output/,不抽帧不 OCR<br>
 <b>下载不翻译</b> — --notrans,停在译文待编辑<br>
-<b>下载+烧录</b> — --burn,字幕直接烧进视频<br>
-<b style=color:#aaa>① 本地视频组</b><br>
+<b>下载+烧录</b> — --burn,字幕直接烧进视频(新工作目录按默认字幕样式,可在「编辑」里改样式后重烧)<br>
+<b style=color:#aaa>① 本地视频</b><br>
 <b>翻译(run)</b> — 本地视频完整流水线<br>
 <b>翻译+烧录</b> — run --burn,已有ASS直接烧<br>
 <b>OCR</b> — --notrans,抽帧+OCR产出 segments.json,不翻译<br>
 <b>重新OCR翻译</b> — run --force,无视已有结果重跑全流程<br>
 <b>重新OCR</b> — extract --force,只重跑抽帧OCR<br>
-<b style=color:#aaa>① 对选中项</b><br>
-<b>编辑</b> — 浏览器译文调整器(可一键还原OCR原始结果)<br>
+<b style=color:#aaa>① 对选中项 · 预览与编辑</b><br>
+<b>编辑</b> — 浏览器译文调整器(可一键还原OCR原始结果,并设置烧录字幕的颜色/描边/位置)<br>
 <b>打码</b> — 打码选取器(生成masks.json)<br>
 <b>选择字幕区</b> — 页内框选字幕区域,生成 --crop 参数存到工作目录,抽帧时自动优先使用<br>
-<b>烧录</b> — 把ASS烧进视频;有masks.json时自动先打码再烧字幕<br>
+<b style=color:#aaa>① 对选中项 · 产出</b><br>
 <b>生成字幕</b> — render,用现有译文生成ASS<br>
+<b>烧录</b> — 把ASS烧进视频;有masks.json时自动先打码再烧字幕<br>
+<b style=color:#aaa>① 对选中项 · 翻译</b><br>
+<b>续翻</b> — translate,只翻没翻过的句子<br>
+<b>重翻</b> — translate --force,忽略译文和缓存全部重翻<br>
+<b style=color:#aaa>① 对选中项 · 投稿与分享</b><br>
 <b>投稿</b> — 弹窗确认标题(AI 译)/简介/标签后投稿到 B 站,需先 biliup-rs 登录(见 settings.BILIUP_COOKIE)<br>
 <b>复制info</b> — 把选中条目工作目录的 info.txt 复制到剪贴板<br>
 <b>复制tag</b> — 弹窗列出 info.txt 标签行里的所有 tag,点击单个 tag 复制<br>
-<b>续翻</b> — translate,只翻没翻过的句子<br>
-<b>重翻</b> — translate --force,忽略译文和缓存全部重翻<br>
+<b style=color:#aaa>① 对选中项 · 删除(不可恢复)</b><br>
 <b>删除工作目录</b> — 删除选中条目的 <名称>.jpsub(字幕/译文全删,视频保留)<br>
+<b>删除视频</b> — 删除选中条目的视频文件(工作目录保留)<br>
 <b style=color:#aaa>其他</b><br>
 <b>② 打开文件夹</b> — 用系统文件管理器打开 output 目录<br>
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>

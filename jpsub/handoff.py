@@ -117,6 +117,11 @@ def crop_path(work: Path) -> Path:
     return hidden_dir(work) / "crop.json"
 
 
+def style_path(work: Path) -> Path:
+    """字幕样式文件:edit 页设置的字色/描边/位置,渲染与烧录共用。"""
+    return hidden_dir(work) / "style.json"
+
+
 def backup_dir(work: Path) -> Path:
     """防误操作备份目录(始终在隐藏子目录里)。"""
     return work / HIDDEN_DIR / "backup"

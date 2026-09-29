@@ -327,17 +327,21 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 #msg{color:#fc6;min-height:1.2em;clear:both}
 .hint{color:#888;margin-top:6px}
 .grp{display:inline-flex;gap:4px;align-items:center;border:1px solid #555;border-radius:6px;padding:4px 6px}
+.sec{margin-top:10px}
+.st{display:block;color:#9ab;font-size:12px;font-weight:600;margin-bottom:3px}
 </style>
 <h3>打码选取 - @@TITLE@@</h3>
 <div id=main>
 <div id=left>
 <div id=wrap><canvas id=cv></canvas><div id=overlay></div></div>
 <video id=vid src=/video preload=auto style=display:none></video>
-<div style=margin-top:4px>
+<div class=sec><b class=st>时间与定位</b>
+<div>
 时间 <input id=t type=text value=0:00.0 style=width:70px> / @@DURF@@
 <input type=range id=slider min=0 max=@@DUR@@ step=0.1 value=0 style=width:220px>
-</div>
-<div style=margin-top:6px>
+</div></div>
+<div class=sec><b class=st>效果(拖框新增,框内左键移动/右键调大小)</b>
+<div>
 效果 <label><input type=radio name=eff value=blur>模糊</label>
 <label><input type=radio name=eff value=color checked>纯色</label>
 <label><input type=radio name=eff value=image>图片</label>
@@ -347,22 +351,24 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 <input id=color type=color value=#000000>
 <button id=pickimg>选图片…</button><span id=selimg style=color:#888></span>
 <input id=imgfile type=file accept="image/*" style=display:none>
-</div>
-<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:flex-start">
+</div></div>
+<div class=sec><b class=st>保存与应用</b>
+<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
 <span class=grp><button id=save>保存</button><input id=bkname placeholder=备份名(可空) style="width:130px" title="留空用当前时间作为备份名"> <button id=apply>应用打码</button></span>
-<span class=hint style=align-self:center>列表序号可点击跳转;拖框新增,框内左键移动/右键调大小</span>
-</div>
-<div class=grp style="flex-direction:column;align-items:stretch;width:300px;margin-top:6px">
+<span class=hint style=align-self:center>列表序号可点击跳转</span>
+</div></div>
+<div class=sec><b class=st>还原与备份</b>
+<div class=grp style="flex-direction:column;align-items:stretch;width:300px">
 <span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
 <input id=bksearch placeholder=搜索备份 style="width:100%;margin:2px 0">
 <select id=bksel size=8 style="width:100%" title="历史备份:每次保存前自动生成;还原时选中其一即还原到该备份,不选则还原到打开时状态"></select>
-</div>
+</div></div>
 <div class=hint style=margin-top:4px>新条目默认 当前帧 ~ 当前帧+5秒;时间可改(支持 mm:ss.s 或秒数)。<br>
 键盘:←/→ 或 A/D ±1秒(Shift ±0.1秒,Alt ±5秒),↑/↓、W/S 或 PageUp/PageDown ±10秒,Home/End 跳到首尾;Q 播放/暂停,C 新增 mask(当前帧~+5秒,沿用上次区域),Z/X 设当前条目的开始/结束,V 新增「裁掉」片段(应用/导出时整段剔除)。</div>
 </div>
 <div id=right>
-<div style=margin-bottom:6px>
-<b>导出片段</b>(把当前生效的时间段打码后单独导出) <button id=cutexport title=保存后导出:当前生效时间段打码成短片段>导出片段</button>
+<div class=sec style=margin-top:0><b class=st>导出</b>
+<div>把当前生效的时间段打码后单独导出 <button id=cutexport title=保存后导出:当前生效时间段打码成短片段>导出片段</button></div>
 </div>
 <table id=list><tr><th>#</th><th>时间</th><th>区域</th><th>效果</th><th></th></tr></table>
 </div>
