@@ -350,22 +350,42 @@ class BaiduOcrEngine:
             i += n
         return out
 
+    # 编号字体候选:跨平台系统字体,全缺失时退回 Pillow 内置字体
+    _MARKER_FONTS = (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/msyhbd.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    )
+
+    @classmethod
+    def _marker_font(cls, size: int):
+        """编号绘制字体:依次尝试系统字体,全部不可用则用内置默认字体。"""
+        from PIL import ImageFont
+
+        for fp in cls._MARKER_FONTS:
+            try:
+                return ImageFont.truetype(fp, size)
+            except OSError:
+                continue
+        for kw in ({"size": size}, {}):
+            try:
+                return ImageFont.load_default(**kw)
+            except TypeError:
+                continue
+        return None
+
     def _stitch(self, imgs, w: int, h: int):
         """把若干帧纵向拼成一张图:黑色分隔带内画白色编号(供无位置接口切分)。"""
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
 
         canvas = Image.new("RGB", (w, len(imgs) * (h + self._SEP)), (0, 0, 0))
         draw = ImageDraw.Draw(canvas)
-        font = None
-        for fp in (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
-        ):
-            try:
-                font = ImageFont.truetype(fp, 34)
-                break
-            except OSError:
-                continue
+        font = self._marker_font(34) if len(imgs) > 1 else None
         for j, im in enumerate(imgs):
             y0 = j * (h + self._SEP)
             if j > 0 and font is not None:  # 第 0 帧上方无编号
@@ -434,13 +454,20 @@ class BaiduOcrEngine:
                         texts[idx] = (texts[idx] + "\n" + words).strip()
                 else:
                     cur = 0
+                    hits = 0
                     for w_row in rows:
                         words = w_row["words"].strip()
                         m = marker.match(words.replace(" ", ""))
                         if m and 0 < int(m.group(1)) < n:
                             cur = int(m.group(1))
+                            hits += 1
                             continue
                         texts[cur] = (texts[cur] + "\n" + words).strip()
+                    if rows and n > 1 and hits == 0:
+                        # 有识别行却无任何编号:编号渲染失败或接口不识别,整批无法切分,
+                        # 不能把全部文本并入首帧 → 判该接口失败,换下一个
+                        last_err = RuntimeError(f"{endpoint} 无帧编号,无法切分拼接图")
+                        break
                 ok = True
                 break
             if ok:

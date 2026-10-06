@@ -1,0 +1,325 @@
+schema: comet.native.v4
+name: home-quit-and-subtitle-timeline
+language: zh-CN
+phase: archive
+status: active
+state_version: 9
+brief: brief.md
+document_constraints_version: 1
+shape_confirmation_hash: 8966ce8f150a22c1a980668edeb66f3337a333c48ad8ef42975ce72c6c98b273
+spec_changes:
+  - capability: app-lifecycle
+    operation: create
+    source: specs/app-lifecycle/spec.md
+  - capability: subtitle-timeline
+    operation: create
+    source: specs/subtitle-timeline/spec.md
+workspace:
+  isolation: worktree
+  change_branch: comet/home-quit-and-subtitle-timeline
+  target_branch: main
+  finish: merge
+loop:
+  stage: archive-ready
+  goal_cycle: 1
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: archive
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1：打开主页并启动一个译文编辑器（edit）页，关闭该编辑页使其服务进程退出；主页服务仍可访问（`/ping` 返回
+      200），主页任务列表不进入退出状态，主页进程不退出。
+    result: passed
+    reason:
+      text: jpsub/home.py 中 launch 型 _watch 只更新任务状态与日志,不再调用 srv.shutdown;独立运行中 edit
+        类子进程退出后 /ping 仍返回 200、任务 st=done、主页进程存活
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2：同上，关闭打码选取器（mask）页后主页依旧运行。
+    result: passed
+    reason:
+      text: 同上,mask 类 launch 子进程以非 0 退出时仅标记 fail 并记日志,主页 /ping 仍返回 200、进程存活
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3：同时打开两个主页页面，关闭其中一个（或其中一个刷新），主页服务继续运行，剩下页面的请求正常；只有关闭最后一个主页页面、且 2
+      秒宽限期内没有新主页页面注册时，主页进程才退出。
+    result: passed
+    reason:
+      text: 注册 p1/p2 两个 pageId 后 /page-close?page=p1,静默等待超过宽限期主页仍存活,剩余页面 p2 的 /ping 返回
+        200
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: A4：主页页面刷新（pagehide 后立即重新加载）不导致程序退出。
+    result: passed
+    reason:
+      text: _register_page 在注销后 2 秒宽限期内被再次调用会 cancel grace_t;注销 p2 后立即
+        /page-open?page=p2b,等待超过宽限期主页仍存活
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: A5：主页「退出程序」按钮行为不变：终止全部存活子进程并退出程序。
+    result: passed
+    reason:
+      text: 在独立子进程中构造 _Home 并 spawn 长驻子进程后 POST
+        /quit(body=b"{}",非空),服务进程退出且长驻子进程被终止(_quit_all 先 kill 全部存活子进程再 shutdown
+        并 os._exit)
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: A6：批量拼接的帧编号渲染不再依赖特定平台的 Linux 字体路径；在系统字体全部不可用的环境下，`_stitch` 仍为 j>0
+      的帧绘制编号，使无位置版接口可按编号切分。
+    result: passed
+    reason:
+      text: 把 _MARKER_FONTS 改为不存在的路径后 _stitch 未抛异常,_marker_font 回退到 Pillow 内置字体,第 1、2
+        帧分隔带白色像素分别为 90 与 130,第 0 帧为 0
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: A7：无位置版接口切分防护：当一次批量请求返回的行不含任何区间编号且批内帧数 n>1
+      时，不把全部文本归入首帧，而是切换下一个接口；全部批量接口不可用时退回逐帧识别。
+    result: passed
+    reason:
+      text: 桩 _call 对 n=4 返回无区间编号的行时 _run_stitched 抛 RuntimeError 并依次尝试 accurate_basic
+        -> general_basic(降级);第二接口返回带编号的行时切分结果为 ['','走れ','','']
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: A8：修复后各帧文本能正确切分回帧，段构建时间轴恢复正常：各段起点严格递增、首段起点为 0，不再出现大量句子挤在数秒区间。
+    result: passed
+    reason:
+      text: 用 40 帧输入经 build_segments 与 _expand_long_segments 后得 80 段,首段 start=0.0,相邻
+        start 严格递增,末段 end=20.0 未被压缩
+      truncated: false
+  - id: A9
+    source: specs/app-lifecycle/spec.md
+    text: 关闭编辑页后主页继续运行 - WHEN 主页启动一个译文编辑器页面，随后该编辑页被关闭、对应子进程以 0 退出 - THEN
+      主页服务仍可访问（`/ping` 返回 200） - AND 主页进程不退出，其余任务不被终止
+    result: passed
+    reason:
+      text: 同 A1:译文编辑器页面对应的 launch 子进程以 0 退出后主页可访问且其它任务未被终止
+      truncated: false
+  - id: A10
+    source: specs/app-lifecycle/spec.md
+    text: 关闭打码页后主页继续运行 - WHEN 主页启动一个打码选取器页面，随后该打码页被关闭、对应子进程以 0 退出 - THEN
+      主页服务仍可访问，主页进程不退出
+    result: passed
+    reason:
+      text: 同 A2:打码选取器页面对应的 launch 子进程退出后主页服务仍可访问、主页进程不退出
+      truncated: false
+  - id: A11
+    source: specs/app-lifecycle/spec.md
+    text: 关闭两个主页页面之一不退出 - WHEN 同时打开两个主页页面，关闭其中一个 - THEN 主页服务继续运行，剩余页面的 `/ping`
+      与其它请求正常 - AND 主页进程不退出
+    result: passed
+    reason:
+      text: 同 A3:两个主页页面同时注册时关闭其中一个,主页继续运行,剩余页面 /ping 与其它请求正常
+      truncated: false
+  - id: A12
+    source: specs/app-lifecycle/spec.md
+    text: 关闭最后一个主页页面才退出 - WHEN 仅有一个主页页面打开，关闭该页面且在 2 秒宽限期内没有新页面注册 - THEN 主页服务关闭，程序退出
+    result: passed
+    reason:
+      text: 仅剩一个页面时注销且宽限期内无新注册,静默等待后 /ping 连接失败,服务已关闭(_grace_exit 触发 shutdown)
+      truncated: false
+  - id: A13
+    source: specs/app-lifecycle/spec.md
+    text: 刷新主页不退出 - WHEN 主页页面刷新（`pagehide` 后立即重新加载并注册新页面） - THEN 主页服务继续运行，程序不退出
+    result: passed
+    reason:
+      text: 同 A4:pagehide 注销后立即重新加载并注册新 pageId,宽限期内注册取消退出,程序继续运行
+      truncated: false
+  - id: A14
+    source: specs/app-lifecycle/spec.md
+    text: 退出程序按钮终止全部子进程并退出 - WHEN 在主页点击「退出程序」并确认 - THEN 所有存活子进程被终止 - AND 主页服务关闭、程序退出
+    result: passed
+    reason:
+      text: 同 A5:/quit 非空 body 触发 _quit_all,终止全部存活子进程(含 launch 型)后关闭服务并退出程序
+      truncated: false
+  - id: A15
+    source: specs/subtitle-timeline/spec.md
+    text: 系统字体不可用时仍绘制编号 - WHEN 所有候选字体路径均不存在，调用 `_stitch` 拼接 n>1 帧 - THEN 图像中第 1..n-1
+      帧的分隔带区域出现编号文字像素 - AND 绘制过程不抛异常
+    result: passed
+    reason:
+      text: 同 A6:全部候选字体路径不存在时 _stitch 仍为 j>0 的帧绘制编号像素且不抛异常
+      truncated: false
+  - id: A16
+    source: specs/subtitle-timeline/spec.md
+    text: 无编号返回触发接口降级 - WHEN 无位置版接口对 n=4 的拼接图返回的行不含任何区间编号 - THEN 该接口的切分结果不被采用 - AND
+      流程尝试下一个批量接口，或全部失败时退回逐帧识别
+    result: passed
+    reason:
+      text: 同 A7:无编号返回不被采用,流程降级到下一批量接口;全部不可用时由 run_many 逐帧兜底
+      truncated: false
+  - id: A17
+    source: specs/subtitle-timeline/spec.md
+    text: 段起点单调递增 - WHEN 用修复后的各帧文本构建段并展开长文 - THEN 段列表按 `start` 升序且相邻段 `start` 严格递增 -
+      AND 首段 `start` 为 0
+    result: passed
+    reason:
+      text: 同 A8:构建段的 start 严格递增、首段为 0,未出现句子挤在数秒区间的时间轴崩塌
+      truncated: false
+builder_handoff:
+  candidate_id: 4512192a-7dce-43c3-ae61-2a1bb34a5960
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:35239dca-bb08-4105-968a-2c901bf7ed28
+  iteration: 1
+  summary:
+    text: 本轮修复两条链路。①应用生命周期:移除主页对 launch 型(edit/mask)子进程退出的 shutdown
+      联动,只更新任务状态与日志(jpsub/home.py);新增主页页面感知——前端加载时注册随机 pageId(/page-open),心跳
+      /ping 携带 pageId,pagehide 经 sendBeacon 注销(/page-close,GET+POST
+      均支持路由);服务端维护存活页面集合,超过 8s 无心跳的页面视为失效,最后一个页面注销且 2s 宽限期内无新注册才 shutdown(/quit
+      空 body 旧信道路径同样先看存活集合;/quit 非空 body 的「退出程序」语义不变,仍 kill 全部子进程后
+      os._exit)。②字幕时间轴:jpsub/ocr.py 的 _stitch
+      帧编号字体改为跨平台候选列表(_MARKER_FONTS:Linux/Windows/macOS 常见字体路径)+ Pillow
+      内置默认字体回退,不再因 Windows 无 Linux 字体路径而跳过编号绘制;_run_stitched 的无位置版切分增加失败防护,批内
+      n>1
+      且有识别行却未匹配到任何区间编号(1..n-1)时判该接口不可用并换下一个接口,全不可用则逐帧兜底,不再把整批文本并入首帧。docs/home.md
+      同步关闭/多开/刷新行为说明。Windows 与 Linux
+      走同一代码路径,无平台分支。定向检查:tests/verify_home_timeline.py(新增)覆盖帧编号字体回退、无编号切分降级、段起点单调与主页页面生命周期(多开关一个不退出、launch
+      子进程退出不联动、刷新不退出、最后页面关闭才退出),已在当前候选上运行通过;A5/A14(「退出程序」按钮终止全部子进程并退出)会终止测试进程,未纳入该脚本,由
+      Verifier 单独核对。已知限制:源实现位于主仓库工作副本,本轮已同步到候选工作区的 jpsub/home.py 与
+      jpsub/ocr.py,两处内容一致。
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A9
+    - A10
+    - A11
+    - A12
+    - A13
+    - A14
+    - A15
+    - A16
+    - A17
+  checks:
+    - name:
+        text: python-ast-parse
+        truncated: false
+      result: passed
+      note:
+        text: ast.parse 解析 jpsub/home.py 与 jpsub/ocr.py,退出码 0
+        truncated: false
+    - name:
+        text: jpsub-cli-help
+        truncated: false
+      result: passed
+      note:
+        text: .venv/bin/python -m jpsub.cli --help 退出码 0,依赖(pysubs2)可加载
+        truncated: false
+    - name:
+        text: tests/verify_home_timeline.py
+        truncated: false
+      result: passed
+      note:
+        text: 开发期定向运行:.venv/bin/python tests/verify_home_timeline.py;4 项均
+          OK(marker-font-fallback / marker-split-fallback / monotonic-timeline /
+          home-lifecycle),退出码 0
+        truncated: false
+    - name:
+        text: quit-button-manual-reasoning
+        truncated: false
+      result: not-run
+      note:
+        text: A5/A14 的 /quit 非空 body 会 os._exit 终止测试进程,未在本轮脚本内自动执行
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: tests/verify_home_timeline.py 覆盖
+        A1-A4、A6-A8、A9-A13、A15-A17;A5/A14(退出程序按钮)会终止进程,需 Verifier 单独执行
+      truncated: false
+    - text: source 改动先落在主仓库工作副本再同步到候选工作区路径,两者内容已核对一致
+      truncated: false
+    - text: 页面存活判定依赖心跳(/ping 3s 一次)与 pagehide 注销;浏览器崩溃等无 pagehide 场景依靠 8s TTL 兜底
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-10-06T10:55:02.392Z
+blockers: []
+verification:
+  candidate_id: 4512192a-7dce-43c3-ae61-2a1bb34a5960
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:a4bdd27d-4b5a-4a47-b106-c0be41059835
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: verify-home-timeline
+      name:
+        text: 主页生命周期与字幕时间轴验收
+        truncated: false
+      argv_display:
+        - text: tests/verify_home_timeline.py
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 17627
+  summary:
+    text: 独立只读核查 A1-A17 全部通过:launch 型 edit/mask 子进程退出不再联动主页
+      shutdown,仅更新任务状态与日志;pageId 注册/心跳/注销 + 8 秒 TTL + 2
+      秒宽限实现多页面感知退出(关闭两页面之一或刷新均不退出,最后一个页面关闭且无新注册才退出);/quit 非空 body
+      仍终止全部存活子进程并退出,/quit 空 body 兼容信号在仍有存活页面时忽略;_stitch 帧编号字体跨平台候选 + Pillow
+      内置字体回退,字体全不可用时仍绘制编号;_run_stitched 无位置版接口在批内 n>1
+      且有识别行却无任何区间编号时判该接口失败并降级,全失败逐帧兜底,不再把整批文本并入首帧;修复后段起点严格递增、首段为
+      0、时间轴未被压缩;docs/home.md 行为说明已同步。Runtime 检查 verify-home-timeline
+      独立结果与本次核查一致。
+    truncated: false
+  risks:
+    - text: 运行环境未提供 verifier-started 输入模板,本次验收未登记启动回执,不影响核查结论。
+      truncated: false
+    - text: A5/A14 的 /quit 走 0.3 秒延迟退出定时器,极端高并发下退出时延可能略增;实测均在预期时间内退出。
+      truncated: false
+    - text: Windows 平台行为未在实体 Windows 上实测,依据为同一代码路径(无影响用户可见行为的平台分支)与跨平台字体候选回退。
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-10-06T10:58:57.951Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 独立只读核查 A1-A17 全部通过:launch 型 edit/mask 子进程退出不再联动主页
+        shutdown,仅更新任务状态与日志;pageId 注册/心跳/注销 + 8 秒 TTL + 2
+        秒宽限实现多页面感知退出(关闭两页面之一或刷新均不退出,最后一个页面关闭且无新注册才退出);/quit 非空 body
+        仍终止全部存活子进程并退出,/quit 空 body 兼容信号在仍有存活页面时忽略;_stitch 帧编号字体跨平台候选 + Pillow
+        内置字体回退,字体全不可用时仍绘制编号;_run_stitched 无位置版接口在批内 n>1
+        且有识别行却无任何区间编号时判该接口失败并降级,全失败逐帧兜底,不再把整批文本并入首帧;修复后段起点严格递增、首段为
+        0、时间轴未被压缩;docs/home.md 行为说明已同步。Runtime 检查 verify-home-timeline
+        独立结果与本次核查一致。
+      truncated: false
+    completed_at: 2026-10-06T10:58:57.951Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: false
+created_at: 2026-10-06T10:28:36.377Z
