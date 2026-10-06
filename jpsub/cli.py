@@ -421,6 +421,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_api(d)
     add_pipeline(d)
     add_style(d)
+    for _sp in sub.choices.values():  # 每个子命令都支持 --debug(仅记录本次运行的调试日志)
+        _sp.add_argument(
+            "--debug",
+            action="store_true",
+            help="记录本次运行的调试日志到 logs/debug.log(含抽帧/筛选/OCR/合并)",
+        )
     args = p.parse_args(argv)
     if not args.command and not args.script:
         p.error("需要子命令、视频 URL 或 -s 脚本文件")
@@ -596,6 +602,20 @@ def _select_keyframes(args, extract_dir: Path, quiet: bool = False):
     返回 (paths, spans, masks, cores, frame_dur, offset),供单视频与批量模式复用。
     """
     apply_work_crop(args)  # 工作目录里保存的字幕区参数优先(--crop 未显式指定时)
+    utils.dbg(
+        {
+            "stage": "extract",
+            "evt": "params",
+            "video": str(args.video),
+            "fps": args.fps,
+            "crop": args.crop,
+            "start": args.start,
+            "end": args.end,
+            "diff_threshold": args.diff_threshold,
+            "settle_frames": args.settle_frames,
+            "max_run": args.max_run,
+        }
+    )
     paths = frames.extract_frames(
         args.video,
         extract_dir,
@@ -611,6 +631,17 @@ def _select_keyframes(args, extract_dir: Path, quiet: bool = False):
     offset = args.start or 0.0  # 时间轴对齐到原始视频
     if not quiet:
         print(f"抽到 {len(paths)} 帧 (crop={args.crop})")
+    utils.dbg(
+        {
+            "stage": "extract",
+            "evt": "frames",
+            "n": len(paths),
+            "frame_dur": frame_dur,
+            "offset": offset,
+            "first": paths[0].name,
+            "last": paths[-1].name,
+        }
+    )
 
     # 停顿触发选关键帧,短停顿合并,只识别每段静止末帧
     # cores:高门槛文字核心掩膜,换段判定不受亮背景噪声稀释
@@ -626,7 +657,23 @@ def _select_keyframes(args, extract_dir: Path, quiet: bool = False):
         masks=masks,
         cores=cores,
     )
+    _dbg_spans(spans, paths)
     return paths, spans, masks, cores, frame_dur, offset
+
+
+def _dbg_spans(spans, paths):
+    """记录关键帧筛选结果(段边界/关键帧),供 --debug 复查时间轴。"""
+    utils.dbg(
+        {
+            "stage": "trigger",
+            "evt": "spans",
+            "n": len(spans),
+            "spans": [
+                [s, e, k, paths[k].name if 0 <= k < len(paths) else None]
+                for s, e, k in spans
+            ],
+        }
+    )
 
 
 _NO_TEXT = "\x00"  # 缓存哨兵:确认识别过且无字;空串/缺失 = 未完成,续跑时重 OCR
@@ -720,6 +767,17 @@ def _ocr_segments(
     texts = [_cache_text(ocr_cache.get(paths[k].name, "")) for k in key_idx]
     saved = 100 * (1 - len(key_idx) / max(1, len(paths)))
     print(f"停顿触发:识别 {len(key_idx)}/{len(paths)} 帧,省 {saved:.0f}% OCR")
+    utils.dbg(
+        {
+            "stage": "ocr",
+            "evt": "texts",
+            "n": len(key_idx),
+            "items": [
+                {"frame": paths[k].name, "idx": k, "text": t}
+                for k, t in zip(key_idx, texts)
+            ],
+        }
+    )
     timed = []
     for (s, e, _k), text in zip(spans, texts):
         for i in range(s, e + 1):
@@ -728,6 +786,14 @@ def _ocr_segments(
     ocr_paths = [paths[k] for k in key_idx]
 
     print(f"合并为 {len(segs)} 条字幕")
+    utils.dbg(
+        {
+            "stage": "segment",
+            "evt": "merged",
+            "n": len(segs),
+            "segs": [[round(s.start, 3), round(s.end, 3), s.text] for s in segs],
+        }
+    )
     return segs, ocr_paths
 
 
@@ -947,6 +1013,17 @@ def _render(args) -> Path:
         )
     if not getattr(args, "batch", False):
         print(f"完成:{out}")
+    utils.dbg(
+        {
+            "stage": "render",
+            "evt": "done",
+            "work": str(work),
+            "out": str(out),
+            "n": len(segs),
+            "font": args.font,
+            "font_size": args.font_size,
+        }
+    )
     return out
 
 
@@ -1514,6 +1591,40 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
     args = argv if isinstance(argv, argparse.Namespace) else parse_args(argv)
     if getattr(args, "ocr_boost", False):
         settings.OCR_BOOST = True  # 特殊画面 OCR 文字凸显(默认关)
+    if getattr(args, "debug", False):  # 仅本次运行写 logs/debug.log
+        utils.DEBUG = True
+        utils.dbg(
+            {
+                "stage": "run",
+                "evt": "start",
+                "command": getattr(args, "command", None),
+                "argv": [str(a) for a in argv] if isinstance(argv, list) else None,
+                "cwd": str(Path.cwd()),
+                "platform": sys.platform,
+            }
+        )
+    try:
+        return _dispatch(args)
+    except SystemExit:
+        raise
+    except BaseException as e:  # noqa: BLE001
+        # --debug 时把未捕获异常(含 ffmpeg 报错)落 logs/debug.log,便于事后复盘
+        import traceback
+
+        utils.dbg(
+            {
+                "stage": "run",
+                "evt": "fatal",
+                "command": getattr(args, "command", None),
+                "error": f"{type(e).__name__}: {e}",
+                "traceback": traceback.format_exc(),
+            }
+        )
+        raise
+
+
+def _dispatch(args) -> Path | None:
+    """按子命令分派(由 run() 兜底记录异常)。"""
     if getattr(args, "script", None):
         from .batch import run_script
 
@@ -1565,12 +1676,17 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
         masks = args.masks or default_masks_path(args.video)
         out = args.output or _product_out(args.video, ".masked.mp4")
         apply_masks(args.video, masks, out)
-        if args.burn:  # 链式:打码完成后接着烧字幕
-            ass = _find_ass(_work_of(args.video))
-            if ass.exists():
-                _burn(out, ass)
-            else:
-                print(f"提示:未找到字幕 {ass},跳过烧录,只输出打码视频")
+        if args.burn:  # 链式:打码完成后接着烧字幕(无字幕则先生成)
+            work = _work_of(args.video)
+            ass = _find_ass(work)
+            if not ass.exists():
+                if handoff.seg_path(work).exists():
+                    print(f"未找到字幕 {ass},先生成字幕")
+                    ass = _render(parse_args(["render", str(work)]))
+                else:
+                    print(f"提示:无 segments.json 且未找到字幕 {ass},跳过烧录,只输出打码视频")
+                    return None
+            _burn(out, ass)
         return None
     if args.command == "voice":
         return _voice(args)

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import settings
+from . import settings, utils
 
 
 def text_boost(im):
@@ -77,12 +77,17 @@ def text_boost(im):
 REQUESTS = 0
 
 
+def _dbg(evt: dict) -> None:
+    """OCR 调试事件:统一走 utils.dbg(--debug 开启时写 logs/debug.log)。"""
+    utils.dbg({"stage": "ocr", **evt})
+
+
 class BaiduOcrEngine:
     """百度通用文字识别:多个免费额度接口轮换,单个额度用尽自动切下一个。
 
     可用接口及月额度(同一个 AK/SK):
     - accurate_basic   高精度版      1000 次/月
-    - accurate_general 高精度含位置  500 次/月
+    - accurate         高精度含位置  500 次/月
     - general_basic    标准版        1000 次/月
     - general          标准含位置版  1000 次/月
     共 3500 次/月;已用尽接口记录在 ~/.jpsub/baidu_ocr_state.json,月初自动重置。
@@ -94,7 +99,7 @@ class BaiduOcrEngine:
     # 逐帧兜底接口(按优先级,高精度优先)
     _ENDPOINTS = (
         "accurate_basic",
-        "accurate_general",
+        "accurate",
         "general_basic",
         "general",
     )
@@ -112,13 +117,13 @@ class BaiduOcrEngine:
     _MAX_W = 2560      # 拼接图宽度上限(留出小图 2 倍放大的空间)
     # 拼接批量接口:位置版按行 y 坐标切分,无位置版按分隔带编号行切分
     _BATCH_ENDPOINTS = (
-        ("accurate_general", True),  # 高精度含位置版 500/月
+        ("accurate", True),          # 高精度含位置版 500/月
         ("accurate_basic", False),   # 高精度版 1000/月
         ("general", True),           # 标准含位置版 1000/月
         ("general_basic", False),    # 标准版 1000/月
     )
     # 含位置版接口(按优先级):仅这两个接口返回 location,供敏感词定位使用
-    _POS_ENDPOINTS = ("accurate_general", "general")
+    _POS_ENDPOINTS = ("accurate", "general")
 
     @classmethod
     def _state_file(cls) -> Path:
@@ -261,7 +266,7 @@ class BaiduOcrEngine:
     ) -> list[tuple[str, tuple[int, int, int, int]]] | None:
         """含位置版识别:返回 [(行文本, (x, y, w, h))],坐标为原图像素。
 
-        只用含位置版接口(accurate_general -> general),不占用无位置版接口额度
+        只用含位置版接口(accurate -> general),不占用无位置版接口额度
         (两者额度独立,普通识别仍走原接口)。两个接口都额度用尽/不可用时标记并
         返回 None,由上层降级为算法定位;成功但无文字时返回空列表。
         """
@@ -339,8 +344,10 @@ class BaiduOcrEngine:
             step = max(1, min(15, (self._MAX_H - self._SEP) // (h + self._SEP)))
             n = min(step, len(imgs))
             try:
-                canvas = self._stitch(imgs[:n], w, h)
-                out[i : i + n] = self._run_stitched(canvas, n, h)
+                canvas = self._stitch(imgs[:n], w, h, [p.name for p in image_paths[i : i + n]])
+                out[i : i + n] = self._run_stitched(
+                    canvas, n, h, [p.name for p in image_paths[i : i + n]]
+                )
             except Exception:  # noqa: BLE001  拼接通道全部不可用,逐帧兜底
                 for j, p in enumerate(image_paths[i : i + n]):
                     out[i + j] = self.run(p)
@@ -379,7 +386,7 @@ class BaiduOcrEngine:
                 continue
         return None
 
-    def _stitch(self, imgs, w: int, h: int):
+    def _stitch(self, imgs, w: int, h: int, names: list[str] | None = None):
         """把若干帧纵向拼成一张图:黑色分隔带内画白色编号(供无位置接口切分)。"""
         from PIL import Image, ImageDraw
 
@@ -393,9 +400,29 @@ class BaiduOcrEngine:
                 tw = draw.textlength(label, font=font)
                 draw.text(((w - tw) / 2, y0 + 4), label, font=font, fill=(255, 255, 255))
             canvas.paste(im, (0, y0 + self._SEP))
+        if utils.DEBUG:
+            d = settings._program_root() / "logs" / "debug"
+            d.mkdir(parents=True, exist_ok=True)
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG")
+            (d / f"ocr_batch_{names[0] if names else 'x'}.png").write_bytes(buf.getvalue())
+            _dbg(
+                {
+                    "evt": "stitch",
+                    "names": names,
+                    "n": len(imgs),
+                    "w": w,
+                    "h": h,
+                    "sep": self._SEP,
+                    "font": getattr(font, "path", None) if font is not None else None,
+                    "canvas": list(canvas.size),
+                }
+            )
         return canvas
 
-    def _run_stitched(self, canvas, n: int, frame_h: int) -> list[str]:
+    def _run_stitched(
+        self, canvas, n: int, frame_h: int, names: list[str] | None = None
+    ) -> list[str]:
         """一次请求识别拼接图,把识别行拆回 n 帧并返回文本列表。
 
         依次尝试 _BATCH_ENDPOINTS:位置版按 y 坐标归属,无位置版按编号行切分;
@@ -436,33 +463,67 @@ class BaiduOcrEngine:
                 rows = data.get("words_result", [])
                 if has_pos:
                     stride = frame_h + self._SEP
+                    assigns = []
                     for w_row in rows:
                         top = w_row.get("location", {}).get("top", 0)
                         words = w_row["words"].strip()
                         idx, local = divmod(top - self._SEP, stride)
                         if local < 0:
+                            assigns.append((words, top, idx, local, None, "skip_neg"))
                             continue  # 首帧上方的分隔带
                         if local >= frame_h:
                             # 检测框 top 偏小几 px,下一帧的帧首行会落进本帧尾部:
                             # 纯数字是分隔带里的编号(丢弃),文本行归属下一帧
                             if words.isdigit():
+                                assigns.append((words, top, idx, local, None, "skip_digit"))
                                 continue
                             idx += 1
                             if idx >= n:
+                                assigns.append((words, top, idx, local, None, "skip_over"))
                                 continue
                         idx = min(n - 1, max(0, idx))
+                        assigns.append((words, top, idx, local, idx, "ok"))
                         texts[idx] = (texts[idx] + "\n" + words).strip()
+                    _dbg(
+                        {
+                            "evt": "run_pos",
+                            "endpoint": endpoint,
+                            "names": names,
+                            "n": n,
+                            "frame_h": frame_h,
+                            "sep": self._SEP,
+                            "stride": stride,
+                            "rows": len(rows),
+                            "assigns": assigns,
+                            "texts": texts,
+                        }
+                    )
                 else:
                     cur = 0
                     hits = 0
+                    assigns = []
                     for w_row in rows:
                         words = w_row["words"].strip()
                         m = marker.match(words.replace(" ", ""))
                         if m and 0 < int(m.group(1)) < n:
                             cur = int(m.group(1))
                             hits += 1
+                            assigns.append((words, cur, "marker"))
                             continue
                         texts[cur] = (texts[cur] + "\n" + words).strip()
+                        assigns.append((words, cur, "text"))
+                    _dbg(
+                        {
+                            "evt": "run_nopos",
+                            "endpoint": endpoint,
+                            "names": names,
+                            "n": n,
+                            "hits": hits,
+                            "rows": len(rows),
+                            "assigns": assigns,
+                            "texts": texts,
+                        }
+                    )
                     if rows and n > 1 and hits == 0:
                         # 有识别行却无任何编号:编号渲染失败或接口不识别,整批无法切分,
                         # 不能把全部文本并入首帧 → 判该接口失败,换下一个

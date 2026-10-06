@@ -2,11 +2,39 @@
 浏览器页面(http.server)公共服务助手。"""
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 from . import handoff
 
 VID_EXTS = (".mp4", ".mkv", ".webm")
+
+# ---------- 全流程调试日志(--debug):事件按行写 logs/debug.log ----------
+
+DEBUG = False  # 由 cli --debug 打开;关闭时 dbg() 零开销
+_DBG_MAX = 4000  # 单个事件的列表类字段截断长度,避免日志爆炸
+
+
+def _truncate(v):
+    if isinstance(v, list) and len(v) > _DBG_MAX:
+        return v[:_DBG_MAX] + [f"...(+{len(v) - _DBG_MAX})"]
+    return v
+
+
+def dbg(evt: dict) -> None:
+    """追加一条调试事件到 logs/debug.log;DEBUG 为假时直接返回。"""
+    if not DEBUG:
+        return
+    evt = {k: _truncate(v) for k, v in evt.items()}
+    line = json.dumps(evt, ensure_ascii=False, default=str)
+    p = Path(__file__).resolve().parent.parent / "logs" / "debug.log"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {line}\n")
+    except OSError:
+        pass
 
 
 def output_root() -> Path:

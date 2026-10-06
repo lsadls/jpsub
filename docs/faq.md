@@ -7,3 +7,5 @@
 - **字幕没显示**：确认 `.ass` 字幕文件与视频同名并放在同一文件夹，使用支持外挂字幕的播放器。
 - **字幕位置/字体想改**：样式可在 `.env` 的 ASS 字幕样式区修改，或用 `--font/--font-size` 等参数指定并重新生成（见 [cli.md](cli.md) 第 5 节）。
 - **字幕时间轴错乱（大量句子挤在开头、后面长时间空）**：多帧拼接批量识别时靠分隔带里的帧编号切分各帧文本，旧版本在 Windows 上因找不到 Linux 字体路径而画不出编号，整批文本被并进首帧。现已改为跨平台字体候选并回退内置字体，识别不到编号时自动降级到下一接口；如仍遇到请更新到最新版后重新生成字幕。
+- **抽帧报 `Unable to choose an output format` / 找不到 ffmpeg**：说明用到的 ffmpeg 是残缺版本（缺 image2 muxer），常见于编辑器/工具链注入到 PATH 的精简版。程序在非 Windows 平台会优先使用系统标准目录（`/usr/local/bin`、`/usr/bin`、`/bin`）里的 ffmpeg 以避开污染的 PATH；Windows 版会优先用程序目录/bin 下自带的 `ffmpeg.exe`。确认这些位置的 ffmpeg 完整即可。
+- **想看某次运行到底发生了什么**：给命令加 `--debug`（主页 ① 勾选「Debug 日志」），全流程事件写到 `logs/debug.log`，OCR 拼接图存 `logs/debug/`，详见 [cli.md](cli.md) 第 17 节。

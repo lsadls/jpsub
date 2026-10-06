@@ -217,3 +217,26 @@ TARGET_LANG = "简体中文"   # 目的语言
 用 biliup 把工作目录成品（打码视频 > 原视频）上传并提交稿件：标题默认 info.txt 原标题（可 `--title`/`--desc` 覆盖，支持标题前缀）、简介由 info.txt 组装、标签取 info 标签行（兜底 `UPLOAD_TAGS`）、封面 `cover.jpg` 自动上传、转载 URL 自动填、`--delay` 定时发布。一次性登录用 `jpsub upload <目录> --login`（代跑 biliup-rs 扫码）或 `biliup login` 后把 cookies.json 放 `~/.jpsub/`。BV 号写回工作目录 `upload.json`，重复投稿先查此文件拦截。直接传**裸条目名**也可以，自动按 output/ 下的条目查找。详见 [upload.md](upload.md)。
 
 > `mask` / `maskapply` 的视频参数同样支持直接传工作目录或裸条目名，自动定位其中的视频。
+
+## 17. 调试日志（`--debug`）
+
+所有子命令都支持 `--debug`，把**本次运行**的全流程事件按行 JSON 追加写到项目根 `logs/debug.log`：
+
+```
+.venv\Scripts\jpsub.exe run "output\sm114431.jpsub\...mp4" --force --debug
+```
+
+记录内容（含时间戳）：
+
+- `run start`：子命令、argv、工作目录、平台；
+- `extract params` / `extract frames`：生效的 `--crop/--fps/--start/--end` 与阈值、抽到的帧数、`frame_dur`、`offset`；
+- `trigger spans`：关键帧筛选出的每段起止帧与关键帧文件名；
+- `ocr texts`：每个关键帧的 OCR 文本（帧归属核对）；
+- `ocr stitch` / `run_pos` / `run_nopos`：多帧拼接批次的尺寸、编号字体、逐识别行的 `top`/`divmod` 归属与结果、无位置版接口的编号命中数；
+- `segment merged`：合并后每条字幕的起止时间与文本；
+- `render done`：输出路径、段数、字体与字号；
+- `ffmpeg_error` / `ffmpeg_oserror` / `fatal`：ffmpeg 失败（返回码 + 完整命令 + stderr 尾部）或未处理异常（类型 + traceback）。
+
+同时把多帧拼接图存到 `logs/debug/ocr_batch_<首帧名>.png`，可直接查看分隔带里的帧编号是否绘制正确。
+
+不传 `--debug` 时零开销、不落盘。主页 ① 的 **Debug 复选框** 勾选后，按钮发起的任务自动带上 `--debug`（详见 [home.md](home.md)）。

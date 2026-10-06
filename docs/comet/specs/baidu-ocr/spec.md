@@ -11,7 +11,7 @@
 | 接口              | 类型           | 月额度 |
 | ----------------- | -------------- | ------ |
 | accurate_basic    | 高精度版       | 1000   |
-| accurate_general  | 高精度含位置版 | 500    |
+| accurate          | 高精度含位置版 | 500    |
 | general_basic     | 标准版         | 1000   |
 | general           | 标准含位置版   | 1000   |
 
@@ -22,7 +22,7 @@
 `_ENDPOINTS`（`_run_b64` 使用）按以下顺序尝试，单个接口额度用尽（error 17/19）自动切换下一个，QPS 超限（18）短暂等待重试：
 
 1. `accurate_basic`
-2. `accurate_general`
+2. `accurate`
 3. `general_basic`
 4. `general`
 
@@ -30,14 +30,14 @@
 
 - WHEN 逐帧识别发起百度 OCR 请求且所有接口均有剩余额度
 - THEN 首个尝试的接口为 `accurate_basic`
-- AND 兜底顺序依次为 `accurate_general`、`general_basic`、`general`
+- AND 兜底顺序依次为 `accurate`、`general_basic`、`general`
 - AND `webimage` 不在任何尝试路径中
 
 ## Requirement: batch-endpoint-order 批量拼接识别接口顺序
 
 `_BATCH_ENDPOINTS`（多帧合并识别使用）按以下顺序尝试，位置版（`has_pos=True`）按行 y 坐标切分，无位置版按分隔带编号行切分：
 
-1. `accurate_general`（位置版）
+1. `accurate`（位置版）
 2. `accurate_basic`（无位置版）
 3. `general`（位置版）
 4. `general_basic`（无位置版）
@@ -45,7 +45,7 @@
 ### Scenario: 批量高精度优先
 
 - WHEN 批量拼接识别发起百度 OCR 请求且所有接口均有剩余额度
-- THEN 首个尝试的接口为 `accurate_general`
+- THEN 首个尝试的接口为 `accurate`
 - AND 兜底顺序依次为 `accurate_basic`、`general`、`general_basic`
 - AND `webimage` 不在任何尝试路径中
 

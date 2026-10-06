@@ -11,12 +11,23 @@ import sys
 from pathlib import Path
 
 
+# 系统标准可执行目录:优先于 PATH 解析,避免编辑器/工具链注入的残缺版本
+# (如 Trae 自带的精简 ffmpeg 缺 image2 muxer,会导致抽帧报 "Unable to choose an output format")
+_SYSTEM_BIN_DIRS = ("/usr/local/bin", "/usr/bin", "/bin", "/usr/local/sbin", "/usr/sbin", "/sbin")
+
+
 def binary(name: str) -> str:
-    """外部工具路径:Windows 依次找程序目录下 <name>.exe、bin/<name>.exe,都没有则用系统 PATH。"""
+    """外部工具路径:Windows 依次找程序目录下 <name>.exe、bin/<name>.exe,都没有则用系统 PATH;
+    其他平台优先取系统标准目录里的同名可执行文件,避开被污染的 PATH。"""
     if sys.platform == "win32":
         root = _program_root()
         for p in (root / f"{name}.exe", root / "bin" / f"{name}.exe"):
             if p.is_file():
+                return str(p)
+    else:
+        for d in _SYSTEM_BIN_DIRS:
+            p = Path(d) / name
+            if p.is_file() and os.access(p, os.X_OK):
                 return str(p)
     return name
 

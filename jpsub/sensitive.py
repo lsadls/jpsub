@@ -3,7 +3,7 @@
 流程(打码总在 OCR 之后,不额外做全量逐帧 OCR):
 1. 读 <工作目录>/.jpsub/segments.json 的画面原文(text),按词表做子串匹配,得到命中段;
 2. 对每个命中段取代表帧(段中点)定位敏感词像素框:
-   - 含位置版 OCR(accurate_general/general):按行框与行内字符序号比例切出整词框;
+   - 含位置版 OCR(accurate/general):按行框与行内字符序号比例切出整词框;
    - 降级(含位置版额度/可用性用尽,或 --sensitive-locate algo):算法在帧内检测文字行,
      把该段原文按行宽容量对应到检测到的行,再按字符序号比例切框;
 3. 命中段的打码区间 = 段的 start/end 各外扩 pad 秒(--sensitive-pad,默认 0.5);

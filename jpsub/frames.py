@@ -64,7 +64,52 @@ def extract_frames(
     if end is not None:
         cmd += ["-t", str(end - (start or 0))]
     cmd += ["-threads", str(settings.ffmpeg_threads()), "-vf", vf, "-q:v", "2", pattern]
-    subprocess.run(cmd, check=True)
+    import collections
+    import re
+    import sys
+
+    from . import utils
+
+    # 流式读 stderr:非 quiet 时把 ffmpeg 的 -stats 进度实时转出,
+    # 同时缓存尾部若干行,失败时连同完整命令写入 logs/debug.log(--debug)。
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        )
+    except OSError as e:  # ffmpeg 不存在等
+        utils.dbg({"stage": "extract", "evt": "ffmpeg_oserror", "cmd": cmd, "err": str(e)})
+        raise
+    tail: collections.deque[str] = collections.deque(maxlen=400)
+    buf = b""
+    while True:
+        data = proc.stderr.read(4096)
+        if not data:
+            break
+        buf += data
+        parts = re.split(rb"[\r\n]", buf)
+        buf = parts.pop()
+        for p in parts:
+            line = p.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            tail.append(line)
+            if not quiet:
+                # ffmpeg -stats 的进度行用 \r 原位刷新,错误行用换行单独显示
+                print(line, end="\r" if line.startswith("frame=") else "\n", file=sys.stderr)
+    if buf.strip():
+        tail.append(buf.decode("utf-8", "replace").strip())
+    rc = proc.wait()
+    if rc != 0:
+        utils.dbg(
+            {
+                "stage": "extract",
+                "evt": "ffmpeg_error",
+                "returncode": rc,
+                "cmd": cmd,
+                "stderr": "\n".join(tail),
+            }
+        )
+        raise subprocess.CalledProcessError(rc, cmd, None, "\n".join(tail))
     return sorted(out_dir.glob("frame_*.jpg"))
 
 

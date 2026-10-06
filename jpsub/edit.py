@@ -480,8 +480,11 @@ tl.addEventListener('pointerdown',e=>{
 tl.addEventListener('pointermove',e=>{if(tldrag)tlScrub(e)});
 tl.addEventListener('pointerup',()=>tldrag=false);
 document.onkeydown=e=>{
-  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
-  if(e.key===' '||e.key==='q'||e.key==='Q'){vid.paused?vid.play():vid.pause();e.preventDefault();return}
+  if(e.ctrlKey||e.metaKey)return; // 放行浏览器原生快捷键(Ctrl+C 复制等)
+  const tag=e.target.tagName;
+  if(tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT')return;
+  if(e.key===' '){vid.paused?vid.play():vid.pause();e.preventDefault();return}
+  if(e.key==='q'||e.key==='Q'){vid.paused?vid.play():vid.pause();e.preventDefault();return}
   if(e.key==='c'||e.key==='C'){$('add').onclick();e.preventDefault();return}
   if(e.key==='z'||e.key==='Z'||e.key==='x'||e.key==='X'){
     let i=cur();
@@ -514,7 +517,6 @@ setInterval(async()=>{
     document.body.appendChild(d);}
 },1000);
 $('quit').onclick=()=>{if(confirm('退出译文编辑器?'))fetch('/quit',{method:'POST'})};
-addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 </script>"""
 
 

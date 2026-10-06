@@ -358,7 +358,7 @@ tr.act{color:#8f8}.del{color:#f88;cursor:pointer;padding:0 4px}
 <span class=grp><button id=cutexport title=保存后导出:当前生效时间段打码成短片段>导出片段</button></span>
 <span class=hint style=align-self:center>列表序号可点击跳转</span>
 </div></div>
-<div class=sec><b class=st>还原与备份</b>
+<div class=sec>
 <div class=grp style="flex-direction:column;align-items:stretch;width:300px">
 <span><button id=restore>还原改动</button> <span class=hint>选中历史备份后点击还原</span></span>
 <input id=bksearch placeholder=搜索备份 style="width:100%;margin:2px 0">
@@ -612,7 +612,6 @@ setInterval(async()=>{  // /apply 是异步线程,持续轮询状态直到完成
     d.textContent='程序已退出,请关闭此页面';
     document.body.appendChild(d);}
 },500);
-addEventListener('pagehide',()=>navigator.sendBeacon('/quit'));
 function setT(v){t=Math.min(DUR,Math.max(0,v));$('t').value=fmt(t);$('slider').value=t;loadFrame();syncAct()}
 $('t').onchange=()=>{const v=parseT($('t').value);if(!isNaN(v))setT(v)};
 $('slider').oninput=()=>{t=+$('slider').value;$('t').value=fmt(t);loadFrame();syncAct()};
@@ -666,16 +665,21 @@ $('cutexport').onclick=async()=>{
   finally{applying=false;}
 };
 document.onkeydown=e=>{
-  if(e.key==='q'||e.key==='Q'){togglePlay();e.preventDefault();return}
-  if(e.key==='c'||e.key==='C'){newMaskAt();e.preventDefault();return}
-  if(e.key==='v'||e.key==='V'){cutAdd();e.preventDefault();return}
-  if(e.key==='z'||e.key==='Z'||e.key==='x'||e.key==='X'){
-    const k=e.key.toLowerCase()==='z'?'start':'end';
-    const m=masks.find(m=>active(m));
-    if(m){m[k]=+t.toFixed(2);syncList();draw();markDirty();
-      msg.textContent=`已设为 mask ${masks.indexOf(m)+1} 的${k==='start'?'开始':'结束'}时间`}
-    else msg.textContent='当前时间没有生效的 mask,无法设置';
-    e.preventDefault();return}
+  if(e.ctrlKey||e.metaKey)return; // 放行浏览器原生快捷键(Ctrl+C 复制等)
+  const tag=e.target.tagName;
+  const typing=tag==='INPUT'||tag==='TEXTAREA'||tag==='SELECT';
+  if(!typing){
+    if(e.key==='q'||e.key==='Q'){togglePlay();e.preventDefault();return}
+    if(e.key==='c'||e.key==='C'){newMaskAt();e.preventDefault();return}
+    if(e.key==='v'||e.key==='V'){cutAdd();e.preventDefault();return}
+    if(e.key==='z'||e.key==='Z'||e.key==='x'||e.key==='X'){
+      const k=e.key.toLowerCase()==='z'?'start':'end';
+      const m=masks.find(m=>active(m));
+      if(m){m[k]=+t.toFixed(2);syncList();draw();markDirty();
+        msg.textContent=`已设为 mask ${masks.indexOf(m)+1} 的${k==='start'?'开始':'结束'}时间`}
+      else msg.textContent='当前时间没有生效的 mask,无法设置';
+      e.preventDefault();return}
+  }
   // 方向键始终控制预览(即使焦点在输入框/滑条上),并阻止默认行为避免同时移动控件
   // WASD 与方向键等价:a/d ±1s,w/s ±10s(Shift/Alt 前缀同样生效)
   const step=e.shiftKey?0.1:(e.altKey?5:1);
@@ -701,6 +705,9 @@ class _Picker:
     def __init__(self, video: Path, masks_path: Path):
         self.video = video
         self.masks_path = masks_path
+        # 备份统一落在工作目录的 .jpsub/backup/(与 edit 一致);masks 默认在
+        # <work>/.jpsub/masks.json,故父目录的父目录即工作目录。
+        self.work = masks_path.parent.parent
         # 打开时的初始快照:还原改动(不选备份)时用
         self._initial = masks_path.read_bytes() if masks_path.is_file() else b""
         self.vw, self.vh = video_size(video)
@@ -726,7 +733,7 @@ class _Picker:
                 elif self.path == "/backups":  # GET:历史备份列表(前端 loadBks 用 GET)
                     from .cli import _backup_names
 
-                    names = _backup_names(picker.masks_path.parent, "masks.json")
+                    names = _backup_names(picker.work, "masks.json")
                     utils.http_json(self, {"ok": True, "names": names})
                 elif self.path.startswith("/frame?"):
                     import json
@@ -791,7 +798,7 @@ class _Picker:
                         from .cli import _backup
 
                         _backup(
-                            picker.masks_path.parent,
+                            picker.work,
                             picker.masks_path,
                             name=str(data.get("name", "") or ""),
                         )
@@ -800,7 +807,7 @@ class _Picker:
                 elif self.path == "/backups":
                     from .cli import _backup_names
 
-                    names = _backup_names(picker.masks_path.parent, "masks.json")
+                    names = _backup_names(picker.work, "masks.json")
                     utils.http_json(self, {"ok": True, "names": names})
                 elif self.path == "/restore":
                     try:
@@ -812,15 +819,13 @@ class _Picker:
                         if name:
                             from .cli import _backup, _backup_src
 
-                            src = _backup_src(
-                                picker.masks_path.parent, name, "masks.json"
-                            )
+                            src = _backup_src(picker.work, name, "masks.json")
                             if not src.is_file():
                                 raise FileNotFoundError(f"找不到备份:{src}")
                             from .cli import _backup
 
                             _backup(  # 还原前备份当前状态
-                                picker.masks_path.parent, picker.masks_path
+                                picker.work, picker.masks_path
                             )
                             picker.masks_path.write_bytes(src.read_bytes())
                         else:  # 不选备份:还原到打开选取器时的状态

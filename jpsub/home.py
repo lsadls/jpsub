@@ -100,6 +100,8 @@ button{white-space:nowrap}
 .job{padding:2px 4px;cursor:pointer}
 .job.sel{background:#3a3a26}
 .tagb{padding:4px 10px}
+input[type=checkbox]{accent-color:#6c6;width:15px;height:15px;margin:0;cursor:pointer}
+label.chk{display:flex;align-items:center;gap:4px;cursor:pointer}
 </style>
 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
 <h2 style=margin:0>jpsub 主页</h2>
@@ -147,6 +149,10 @@ button{white-space:nowrap}
 <button onclick=delWork()>删除工作目录</button>
 <button onclick=delVid()>删除视频</button>
 </div></div>
+<div class=row>
+<label class=chk title="勾选后所有按钮触发的任务自动追加 --debug,把全流程日志写入 logs/debug.log">
+<input type=checkbox id=dbg>Debug 日志(记录全流程到 logs/debug.log)</label>
+</div>
 <div class=row>
 <span class=lbl>自定义命令</span>
 <input id=ccmd type=text style="flex:1" placeholder="完整命令,如 download sm123 -v 720p -a best --download-only">
@@ -204,6 +210,7 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>
 <b>① 自定义命令</b> — 输入完整 jpsub 命令(子命令+参数,如 download sm123 -v 720p),点运行即在后台执行,输出显示在任务里<br>
 <b>④ 终止选中</b> — 结束选中的任务;自定义参数框的内容会追加到所有命令后<br>
+<b>Debug 日志</b> — 勾选后所有按钮发起的任务自动加 --debug,抽帧/筛选/OCR/合并全流程写到 logs/debug.log(排查时间轴异常用;批量脚本不受影响)<br>
 <b>退出程序</b> — 右上角按钮,终止程序(含正在运行的任务)<br>
 force 操作与覆盖旧文件前都会自动备份到工作目录 backup/时间戳/ 文件夹
 </div>
@@ -325,7 +332,7 @@ $('vfile').onchange=async e=>{  // 同打码选图片:原生对话框选文件 -
 async function cmd(sub,flags){
   const j=await post('/cmd',{sub,flags,name:selName,
     url:$('url').value.trim(),path:localPath,
-    extra:$('extra').value.trim()});
+    extra:$('extra').value.trim(),debug:$('dbg').checked});
   if(!j.ok)alert('失败:'+j.err);else{refresh();refreshJobs()}
 }
 let jobsLen=-1,selJob=-1;
@@ -435,12 +442,10 @@ async function quitApp(){
 }
 // ---- 心跳:程序退出(无论何种方式)后自动关闭页面/显示遮罩 ----
 let quitting=false;  // 主动退出中:停掉心跳,避免打断 /quit 的退出流程
-const pageId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
-fetch('/page-open?page='+encodeURIComponent(pageId)).catch(()=>{});  // 加载即注册,刷新/多开据此判定
 setInterval(async()=>{
   if(quitting)return;
   try{
-    const r=await fetch('/ping?page='+encodeURIComponent(pageId)+'&t='+Date.now());
+    const r=await fetch('/ping?t='+Date.now());
     if(!r.ok)throw 0;
   }catch(e){
     if(document.getElementById('deadov'))return;
@@ -451,9 +456,7 @@ setInterval(async()=>{
     document.body.appendChild(d);
   }
 },3000);
-// 页面关闭/刷新时注销本页面;仅当最后一个主页页面关闭时程序才退出
-// (刷新:重载后新页面 id 注册,程序保持运行;多开:其它页面仍在,不退出)
-addEventListener('pagehide',()=>{if(!quitting)navigator.sendBeacon('/page-close?page='+encodeURIComponent(pageId))});
+// 关闭/刷新页面不影响程序(仅网页「退出程序」按钮才终止)
 // ---- 字幕区选择器(页内弹层,框选生成 --crop 参数) ----
 let cname=null,cw=0,ch=0,cdur=0,cropT=0,csel=null,cdrag=null,chov=null,cfetch=false,cpending=null,clast=null;
 const fmtT=s=>`${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`;
@@ -705,7 +708,6 @@ class _Home:
 
         self.root = root
         self.jobs: list[dict] = []  # {proc|inline, desc, st, line}
-        self.pages: dict[str, float] = {}  # 存活主页页面:pageId → 最近心跳时间
         self._scan_sig = None  # output 扫描结果缓存:目录树未变时 /list 直接复用
         self._scan_cache: list[dict] | None = None
         home = self
@@ -829,71 +831,7 @@ class _Home:
                             lines.append(line)
                             del lines[:-200]
 
-        def _cancel_grace_quit():
-            """取消 pagehide 触发的延迟退出(页面刷新后仍存活)。"""
-            t = getattr(home, "grace_t", None)
-            if t is not None:
-                t.cancel()
-                home.grace_t = None
-
-        # ---- 主页页面感知:只有最后一个页面关闭才退出(刷新/多开不误退) ----
-        home.pages_seen = False  # 是否已有页面注册过(避免启动瞬间误判为空)
-        _PAGE_TTL = 8.0  # 心跳超时:超过该时长无心跳的页面视为已崩溃/关闭
-
-        def _live_pages() -> dict[str, float]:
-            now = time.time()
-            for pid, ts in list(home.pages.items()):
-                if now - ts > _PAGE_TTL:
-                    del home.pages[pid]
-            return home.pages
-
-        def _grace_exit():
-            """页面集合已空:延迟 2 秒退出,期间有新页面注册则取消。"""
-            if getattr(home, "quitting", False) or getattr(home, "grace_t", None):
-                return
-            if _live_pages():
-                return
-
-            def _grace():
-                if _live_pages():  # 宽限期内又打开了页面
-                    home.grace_t = None
-                    return
-                home.quitting = True
-                try:
-                    home.srv.shutdown()
-                except Exception:  # noqa: BLE001
-                    os._exit(0)
-
-            home.grace_t = threading.Timer(2.0, _grace)
-            home.grace_t.start()
-
-        def _pages_gc():
-            while True:
-                time.sleep(2.0)
-                if not home.pages_seen or getattr(home, "quitting", False):
-                    continue
-                if not _live_pages():
-                    _grace_exit()
-
-        threading.Thread(target=_pages_gc, daemon=True).start()
-
-        def _page_id(path: str) -> str:
-            """从请求 URL 取出页面 id(主页页面的唯一标识)。"""
-            import urllib.parse
-
-            q = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
-            return q.get("page", [""])[0]
-
-        def _register_page(pid: str) -> None:
-            home.pages_seen = True
-            home.pages[pid] = time.time()
-            t = getattr(home, "grace_t", None)
-            if t is not None:  # 有新页面注册,取消延迟退出(刷新场景)
-                t.cancel()
-                home.grace_t = None
-
-        def _unregister_page(pid: str) -> None:
-            home.pages.pop(pid, None)
+        # ---- 关闭主页页面不影响程序:仅网页「退出程序」按钮才终止 ----
 
         def spawn(
             desc: str,
@@ -958,19 +896,9 @@ class _Home:
                 pass
 
             def do_GET(self):
-                _cancel_grace_quit()  # 有新请求(如刷新后的首个请求)则取消延迟退出
                 if self.path == "/":
                     utils.http_page(self, _PAGE)
                 elif self.path.startswith("/ping"):  # 心跳:页面据此检测程序是否已退出
-                    pid = _page_id(self.path)
-                    if pid:
-                        _register_page(pid)  # 心跳即页面存活凭据
-                    utils.http_json(self, {})
-                elif self.path.startswith("/page-open"):  # 页面加载:注册该页面
-                    _register_page(_page_id(self.path))
-                    utils.http_json(self, {})
-                elif self.path.startswith("/page-close"):  # 页面关闭:注销该页面
-                    _unregister_page(_page_id(self.path))
                     utils.http_json(self, {})
                 elif self.path == "/list":
                     utils.http_json(self, {"items": _scan_output_cached(home)})
@@ -1155,7 +1083,6 @@ class _Home:
             def do_POST(self):
                 import shlex
 
-                _cancel_grace_quit()  # 有新请求(如刷新后的首个请求)则取消延迟退出
                 n = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(n) or b"{}")
                 _log(f"操作 {self.path}:{body if body else ''}")
@@ -1269,33 +1196,27 @@ class _Home:
                         home.spawn(f"{name} 投稿", [*exe, *args], label=f"{name} 投稿")
                         utils.http_json(self, {"ok": True})
                     elif self.path.startswith("/page-close"):
-                        # sendBeacon(pagehide)是 POST:注销该页面;
-                        # 是否退出由存活页面集合与宽限期判定,不在此直接退出
-                        _unregister_page(_page_id(self.path))
+                        # 页面关闭信号:忽略,关闭页面不影响程序
                         utils.http_json(self, {"ok": True})
                     elif self.path == "/quit":
                         utils.http_json(self, {"ok": True})
                         if n == 0:
-                            # 旧版页面/beacon 的兼容信号:仅当已无其它存活主页页面时
-                            # 才延迟退出;多开或其它页面仍在时不理会
-                            if _live_pages():
-                                _log("收到页面关闭信号,但仍有其它主页页面存活,继续运行")
-                            else:
-                                _grace_exit()
-                        else:
-                            # 网页「退出程序」按钮:延迟退出避免连接中断报错;先终止所有
-                            # 存活子进程(编辑/打码是独立子进程,不杀会残留),os._exit 连内联任务一起终止
-                            home.quitting = True
+                            # 页面卸载 beacon:忽略,不因页面关闭而退出
+                            _log("收到页面关闭信号,忽略(关闭页面不影响程序)")
+                            return
+                        # 网页「退出程序」按钮:延迟退出避免连接中断报错;先终止所有
+                        # 存活子进程(编辑/打码是独立子进程,不杀会残留),os._exit 连内联任务一起终止
+                        home.quitting = True
 
-                            def _quit_all():
-                                for j in home.jobs:
-                                    if j["proc"] is not None and j["proc"].poll() is None:
-                                        _kill_tree(j["proc"])
-                                home.srv.shutdown()
-                                home.srv.server_close()
-                                os._exit(0)
+                        def _quit_all():
+                            for j in home.jobs:
+                                if j["proc"] is not None and j["proc"].poll() is None:
+                                    _kill_tree(j["proc"])
+                            home.srv.shutdown()
+                            home.srv.server_close()
+                            os._exit(0)
 
-                            threading.Timer(0.3, _quit_all).start()
+                        threading.Timer(0.3, _quit_all).start()
                     elif self.path == "/script":
                         text = str(body.get("text", ""))
                         if not text.strip():
@@ -1334,6 +1255,8 @@ class _Home:
                         # 通用子命令入口:{sub, flags[], url, path, name}
                         sub = str(body.get("sub", "")).strip()
                         flags = [str(f) for f in body.get("flags", [])]
+                        if body.get("debug"):  # 主页 Debug 勾选:本次任务追加 --debug
+                            flags = [*flags, "--debug"]
                         url = str(body.get("url", "")).strip()
                         name = str(body.get("name", "")).strip()
                         video = _named_video(home.root, name) or home.root / name
