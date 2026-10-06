@@ -8,7 +8,7 @@
 ## 1. 开启全局代理（重要）
 
 - 下载 niconico 视频、调用百度 OCR / AI 翻译，都需要访问国外网站。
-- 请先开启你的代理软件（如 Clash、v2rayN 等）并开启**全局模式（Global）**，或在 `settings.py` 里配 `PROXY`。
+- 请先开启你的代理软件（如 Clash、v2rayN 等）并开启**全局模式（Global）**，或在 `.env` 里配 `PROXY`。
 
 ## 2. 下载两个外部工具
 
@@ -26,11 +26,11 @@
 ```
 .venv
 jpsub
-settings.py        ← 你的 AI 配置(可选,没有就用程序内置默认值)
+.env        ← 你的 AI 配置(可选,没有就用程序内置默认值)
 ffmpeg.exe
 ffprobe.exe
 yt-dlp.exe
-settings.py.example  ← 默认配置模板,不用动
+.env.example  ← 默认配置模板,不用动
 ```
 
 也可以不用放进 `bin`，改为安装到系统并加入 PATH，二选一即可。

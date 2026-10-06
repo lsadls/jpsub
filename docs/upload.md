@@ -16,7 +16,7 @@ jpsub upload <工作目录> --login   # 自动调 biliup-rs 并保存 cookies
 
 cookie 过期时投稿会报「登录失败」,删除 cookies.json 重新扫码即可。
 
-## 配置(settings.py)
+## 配置(.env)
 
 | 变量 | 说明 |
 | --- | --- |

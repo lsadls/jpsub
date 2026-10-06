@@ -19,7 +19,7 @@
 
 | 机制 | 位置 | 说明 |
 |---|---|---|
-| 关闭模型思考 | `jpsub/settings.py` `REASONING_EFFORT="none"` | 输出 token 降 80%;端点不认该参数时留空 |
+| 关闭模型思考 | `jpsub/.env` `REASONING_EFFORT="none"` | 输出 token 降 80%;端点不认该参数时留空 |
 | 对话历史裁剪 | `HISTORY_KEEP=3` | 只留 system + 最近 3 轮,prompt 不随批数线性膨胀 |
 | 动态并发 | `ai.calc_concurrency` | 按总字数线性插值(3792 字→G16,5230 字→G24),钳 8~32 |
 | 每请求句数 | `group_batch=20` | 大批摊薄 system 前缀,gb≥8 后实付降 60%+;普通与长文共用 |

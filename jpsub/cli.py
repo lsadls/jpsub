@@ -1444,9 +1444,9 @@ def _download(args) -> Path:
     from . import download as dl
     from .download import download
 
-    if args.cookies_from_browser:  # 命令行优先于 settings.py
+    if args.cookies_from_browser:  # 命令行优先于 .env
         dl.settings.COOKIES_FROM_BROWSER = args.cookies_from_browser
-    if args.video_quality:  # -v/-a 命令行优先于 settings.py
+    if args.video_quality:  # -v/-a 命令行优先于 .env
         dl.settings.NICO_VIDEO_QUALITY = args.video_quality
     if args.audio_quality:
         dl.settings.NICO_AUDIO_QUALITY = args.audio_quality

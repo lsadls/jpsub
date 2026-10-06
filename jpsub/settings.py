@@ -1,4 +1,4 @@
-"""全局设置:默认值内置,可被程序目录 settings.py 覆盖。
+"""全局设置:默认值内置,可被程序目录 .env 覆盖。
 
 - API_BASE/API_KEY/MODEL:AI 翻译用的 OpenAI 兼容端点配置
 - PROXY:访问国外资源用的代理;留空走系统代理
@@ -163,14 +163,62 @@ def ffmpeg_threads() -> int:
     return os.cpu_count() or 1
 
 
+def _parse_env(text: str) -> dict:
+    """解析 .env:每行 KEY=VALUE,`#` 起始为注释。
+    值按 Python 字面量解析(数字/布尔/元组/字典/集合/引号字符串),
+    引号值可带行尾注释与转义,支持三引号跨行;字面量解析失败则按裸字符串。"""
+    import ast
+
+    lines = text.splitlines()
+    out: dict = {}
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if not s or s.startswith("#") or "=" not in s:
+            i += 1
+            continue
+        key, _, val = s.partition("=")
+        key, val = key.strip(), val.strip()
+        if not key:
+            i += 1
+            continue
+        quote3 = val[:3] if val[:3] in ('"""', "'''") else ""
+        if quote3:
+            while val.count(quote3) < 2 and i + 1 < len(lines):
+                i += 1
+                val += "\n" + lines[i]
+        out[key] = _env_value(val)
+        i += 1
+    return out
+
+
+def _env_value(val: str):
+    """把单个值字符串解析成 Python 值:优先字面量,失败按裸字符串(去行尾注释)。"""
+    import ast
+    import re
+
+    try:
+        return ast.literal_eval(val)
+    except ValueError, SyntaxError:
+        pass
+    m = re.match(
+        r'^("""[\s\S]*?"""|\'\'\'[\s\S]*?\'\'\'|"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')',
+        val,
+    )
+    if m:
+        try:
+            return ast.literal_eval(m.group(1))
+        except ValueError, SyntaxError:
+            pass
+    return val.split("#", 1)[0].strip()
+
+
 def _load_user_settings() -> None:
-    """加载程序目录 settings.py(用户覆盖),用其中的大写变量覆盖上面的默认值。"""
-    p = _program_root() / "settings.py"
+    """加载程序目录 .env(用户覆盖),用其中的大写变量覆盖上面的默认值。"""
+    p = _program_root() / ".env"
     if not p.is_file():
         return
-    ns: dict = {}
-    exec(compile(p.read_text(encoding="utf-8"), str(p), "exec"), ns)
-    for k, v in ns.items():
+    for k, v in _parse_env(p.read_text(encoding="utf-8")).items():
         if k.isupper():
             globals()[k] = v
 

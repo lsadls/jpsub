@@ -122,7 +122,7 @@ def _chat(
     """调用 OpenAI 兼容 /chat/completions 端点,带简单重试。
 
     cfg 含 api_base/api_key/model。API 请求不走代理(代理只用于
-    pip/模型下载,见 settings.py)。
+    pip/模型下载,见 .env)。
     messages 为完整对话历史;系统提示词只放在第一条,后续批次在同一
     对话上下文里继续,配合服务商 prompt cache 省去重复前缀的开销。
     """
@@ -476,7 +476,7 @@ def translate_texts_parallel(
 def resolve_config(args) -> dict:
     """解析出完整配置 dict(api_base/api_key/model)。
 
-    优先级:命令行参数 > 环境变量 > settings.py 里的变量。
+    优先级:命令行参数 > 环境变量 > .env 里的变量。
     """
     cfg = {
         "api_base": args.api_base

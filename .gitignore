@@ -3,9 +3,8 @@
 __pycache__/
 *.egg-info/
 output/
-models/
 .trae/
-/settings.py
+/.env
 bin/
 yt-dlp.exe
 archive/

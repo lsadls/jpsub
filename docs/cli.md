@@ -105,7 +105,7 @@
 
 AI拓也使用 `--crop 1` 获取全部文字,并使用 `--long` 拆句翻译降低长段翻坏的概率
 
-也可以在 `settings.py` 里配置 `CROP_PRESETS` 快捷预设,之后 `--crop 键` 直接使用对应值:
+也可以在 `.env` 里配置 `CROP_PRESETS` 快捷预设,之后 `--crop 键` 直接使用对应值:
 
 ```python
 CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
@@ -132,7 +132,7 @@ CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
 .venv\Scripts\jpsub.exe sm43168834 --cookies-from-browser firefox
 ```
 
-也可以在 `settings.py` 里写 `COOKIES_FROM_BROWSER = "chrome"` 永久生效（命令行参数优先）。
+也可以在 `.env` 里写 `COOKIES_FROM_BROWSER = "chrome"` 永久生效（命令行参数优先）。
 
 > 注意：使用前请确保对应浏览器已**完全退出**（Firefox 可不用退出），否则 cookie 数据库可能被占用。
 
@@ -178,7 +178,7 @@ CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
  BB劇場	BB剧场
 ```
 
-加载顺序（后加载覆盖同名词条）：全局 `~/.jpsub/glossary.txt` → 工作目录 `glossary.txt` → `settings.GLOSSARY_FILE` → `--glossary` 指定文件。
+加载顺序（后加载覆盖同名词条）：全局 `~/.jpsub/glossary.txt` → 工作目录 `glossary.txt` → `.env` 的 `GLOSSARY_FILE` → `--glossary` 指定文件。
 
 词条**不随提示词发送**，而是在发送前把原文里的词条直接替换成译文（长词优先，⟦⟧标记提醒 AI 原样保留），专有名词必准，也大幅降低含敏感词素材被 API 拒译的概率。改动对照表后需重翻对应句子才生效（旧译文不自动改）。
 
@@ -187,7 +187,7 @@ CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
 默认日语→简体中文。改源/目的语言两种方式：
 
 ```python
-# settings.py
+# .env
 SOURCE_LANG = "JAP"       # 源语言(百度 OCR 简写,OCR 与翻译提示词共用)
 TARGET_LANG = "简体中文"   # 目的语言
 ```
@@ -206,7 +206,7 @@ TARGET_LANG = "简体中文"   # 目的语言
 .venv\Scripts\jpsub.exe translate output/sm114514.jpsub --prompt myprompt.txt
 ```
 
-留空用内置默认（`prompts/bb.txt`）。文件里可用占位符：`{src}` 源语言名、`{tgt}` 目的语言名、`{punct}` 标点规则（目的语为中文时生成）。也可写 `settings.PROMPT_FILE` 永久生效。
+留空用内置默认（`prompts/bb.txt`）。文件里可用占位符：`{src}` 源语言名、`{tgt}` 目的语言名、`{punct}` 标点规则（目的语为中文时生成）。也可写 `.env` 的 `PROMPT_FILE` 永久生效。
 
 ## 16. B 站投稿（upload）
 

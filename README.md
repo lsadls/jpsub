@@ -9,7 +9,7 @@
 ## 快速开始
 
 1. 到本仓库 **Releases** 页面下载打包好的程序，解压即用（已内置 ffmpeg / yt-dlp 和 Python 库，OCR 走在线 API，无本地模型）；
-2. 把 `settings.py.example` 复制改名为 `settings.py`，填入你的 AI 翻译与 OCR 配置（详见 [doc/settings.md](doc/settings.md)）；
+2. 把 `.env.example` 复制改名为 `.env`，填入你的 AI 翻译与 OCR 配置（详见 [doc/settings.md](doc/settings.md)）；
 3. 开启代理软件的**全局模式**，双击运行程序自动打开浏览器主页（详见 [doc/home.md](doc/home.md)）。
 
 ## 使用方法（主页）
@@ -39,7 +39,7 @@
 | ---------------------------------- | -------------------------------------------- |
 | [doc/update.md](doc/update.md)     | 更新方式                                     |
 | [doc/install.md](doc/install.md)   | 源码运行准备（全局代理、下载 ffmpeg/yt-dlp） |
-| [doc/settings.md](doc/settings.md) | `settings.py` 配置详解（AI 翻译与 OCR）      |
+| [doc/settings.md](doc/settings.md) | `.env` 配置详解（AI 翻译与 OCR）      |
 | [doc/home.md](doc/home.md)         | 主页各分区与按钮详细说明                     |
 | [doc/edit.md](doc/edit.md)         | 译文调整器（浏览器可视化改译文）             |
 | [doc/mask.md](doc/mask.md)         | 打码（马赛克/遮挡/静音）                     |

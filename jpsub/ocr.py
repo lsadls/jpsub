@@ -3,7 +3,7 @@
 本地 PaddleOCR 引擎已归档到 archive/ocr_paddle.py;本模块保持相同接口
 (run / run_lines / run_many),调用方无需改动。
 
-配置(settings.py):
+配置(.env):
 - OCR_PROVIDER = "baidu"(默认)或 "openai"
 - baidu:BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY
 - openai:OCR_API_BASE / OCR_API_KEY(留空回退 API_BASE / API_KEY)+ OCR_MODEL
@@ -158,7 +158,7 @@ class BaiduOcrEngine:
         secret = settings.BAIDU_OCR_SECRET_KEY
         if not key or not secret:
             raise SystemExit(
-                "错误:未配置百度 OCR。请在 settings.py 设置 BAIDU_OCR_API_KEY/"
+                "错误:未配置百度 OCR。请在 .env 设置 BAIDU_OCR_API_KEY/"
                 "BAIDU_OCR_SECRET_KEY,或把 OCR_PROVIDER 改为 openai"
             )
         url = (
@@ -486,7 +486,7 @@ class ApiOcrEngine:
         model = settings.OCR_MODEL
         if not base or not key or not model:
             raise SystemExit(
-                "错误:未配置在线 OCR。请在 settings.py 设置 OCR_API_BASE/"
+                "错误:未配置在线 OCR。请在 .env 设置 OCR_API_BASE/"
                 "OCR_API_KEY/OCR_MODEL(或回退用的 API_BASE/API_KEY + OCR_MODEL)"
             )
         return base.rstrip("/"), key, model
