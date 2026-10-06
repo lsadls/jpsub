@@ -435,10 +435,12 @@ async function quitApp(){
 }
 // ---- 心跳:程序退出(无论何种方式)后自动关闭页面/显示遮罩 ----
 let quitting=false;  // 主动退出中:停掉心跳,避免打断 /quit 的退出流程
+const pageId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();
+fetch('/page-open?page='+encodeURIComponent(pageId)).catch(()=>{});  // 加载即注册,刷新/多开据此判定
 setInterval(async()=>{
   if(quitting)return;
   try{
-    const r=await fetch('/ping?t='+Date.now());
+    const r=await fetch('/ping?page='+encodeURIComponent(pageId)+'&t='+Date.now());
     if(!r.ok)throw 0;
   }catch(e){
     if(document.getElementById('deadov'))return;
@@ -449,9 +451,9 @@ setInterval(async()=>{
     document.body.appendChild(d);
   }
 },3000);
-// 页面关闭/刷新时通知程序;关闭→程序退出(编辑/打码窗口连带关闭),
-// 刷新→重载后的第一个请求会取消延迟退出,程序继续运行
-addEventListener('pagehide',()=>{if(!quitting)navigator.sendBeacon('/quit')});
+// 页面关闭/刷新时注销本页面;仅当最后一个主页页面关闭时程序才退出
+// (刷新:重载后新页面 id 注册,程序保持运行;多开:其它页面仍在,不退出)
+addEventListener('pagehide',()=>{if(!quitting)navigator.sendBeacon('/page-close?page='+encodeURIComponent(pageId))});
 // ---- 字幕区选择器(页内弹层,框选生成 --crop 参数) ----
 let cname=null,cw=0,ch=0,cdur=0,cropT=0,csel=null,cdrag=null,chov=null,cfetch=false,cpending=null,clast=null;
 const fmtT=s=>`${Math.floor(s/60)}:${(s%60).toFixed(1).padStart(4,'0')}`;
@@ -703,6 +705,7 @@ class _Home:
 
         self.root = root
         self.jobs: list[dict] = []  # {proc|inline, desc, st, line}
+        self.pages: dict[str, float] = {}  # 存活主页页面:pageId → 最近心跳时间
         self._scan_sig = None  # output 扫描结果缓存:目录树未变时 /list 直接复用
         self._scan_cache: list[dict] | None = None
         home = self
@@ -833,6 +836,65 @@ class _Home:
                 t.cancel()
                 home.grace_t = None
 
+        # ---- 主页页面感知:只有最后一个页面关闭才退出(刷新/多开不误退) ----
+        home.pages_seen = False  # 是否已有页面注册过(避免启动瞬间误判为空)
+        _PAGE_TTL = 8.0  # 心跳超时:超过该时长无心跳的页面视为已崩溃/关闭
+
+        def _live_pages() -> dict[str, float]:
+            now = time.time()
+            for pid, ts in list(home.pages.items()):
+                if now - ts > _PAGE_TTL:
+                    del home.pages[pid]
+            return home.pages
+
+        def _grace_exit():
+            """页面集合已空:延迟 2 秒退出,期间有新页面注册则取消。"""
+            if getattr(home, "quitting", False) or getattr(home, "grace_t", None):
+                return
+            if _live_pages():
+                return
+
+            def _grace():
+                if _live_pages():  # 宽限期内又打开了页面
+                    home.grace_t = None
+                    return
+                home.quitting = True
+                try:
+                    home.srv.shutdown()
+                except Exception:  # noqa: BLE001
+                    os._exit(0)
+
+            home.grace_t = threading.Timer(2.0, _grace)
+            home.grace_t.start()
+
+        def _pages_gc():
+            while True:
+                time.sleep(2.0)
+                if not home.pages_seen or getattr(home, "quitting", False):
+                    continue
+                if not _live_pages():
+                    _grace_exit()
+
+        threading.Thread(target=_pages_gc, daemon=True).start()
+
+        def _page_id(path: str) -> str:
+            """从请求 URL 取出页面 id(主页页面的唯一标识)。"""
+            import urllib.parse
+
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
+            return q.get("page", [""])[0]
+
+        def _register_page(pid: str) -> None:
+            home.pages_seen = True
+            home.pages[pid] = time.time()
+            t = getattr(home, "grace_t", None)
+            if t is not None:  # 有新页面注册,取消延迟退出(刷新场景)
+                t.cancel()
+                home.grace_t = None
+
+        def _unregister_page(pid: str) -> None:
+            home.pages.pop(pid, None)
+
         def spawn(
             desc: str,
             cmd: list[str],
@@ -876,27 +938,15 @@ class _Home:
             home.jobs.append(j)
             threading.Thread(target=_pump, args=(proc, j), daemon=True).start()
             if kind == "launch":
-                # 编辑/打码等窗口进程:其页面关闭(进程退出)时整个程序一并退出
+                # 编辑/打码等窗口进程:只是主页启动的独立窗口,其退出不联动主页退出
                 def _watch(p=proc):
                     code = p.wait()
-                    if getattr(home, "quitting", False) or getattr(home, "grace_t", None):
-                        return  # 程序已在退出流程中
-                    if code != 0:
-                        j["st"] = "fail"
-                        if not str(j.get("line", "")).strip():
-                            j["line"] = f"异常退出(code={code})"
-                        _log(f"窗口进程异常退出(code={code}),主页保持运行:{desc}")
-                        return  # 报错退出≠关闭页面,不联动退出
-                    _log(f"窗口进程退出,程序结束:{desc}")
-                    home.quitting = True
-                    for jj in home.jobs:
-                        pp = jj.get("proc")
-                        if pp and pp is not p and pp.poll() is None:
-                            _kill_tree(pp)
-                    try:
-                        home.srv.shutdown()
-                    except Exception:  # noqa: BLE001
-                        os._exit(0)
+                    j["st"] = "done" if code == 0 else "fail"
+                    if code != 0 and not str(j.get("line", "")).strip():
+                        j["line"] = f"异常退出(code={code})"
+                    _log(
+                        f"窗口进程退出(code={code}),主页保持运行:{desc}"
+                    )
 
                 threading.Thread(target=_watch, daemon=True).start()
             return len(home.jobs) - 1
@@ -912,6 +962,15 @@ class _Home:
                 if self.path == "/":
                     utils.http_page(self, _PAGE)
                 elif self.path.startswith("/ping"):  # 心跳:页面据此检测程序是否已退出
+                    pid = _page_id(self.path)
+                    if pid:
+                        _register_page(pid)  # 心跳即页面存活凭据
+                    utils.http_json(self, {})
+                elif self.path.startswith("/page-open"):  # 页面加载:注册该页面
+                    _register_page(_page_id(self.path))
+                    utils.http_json(self, {})
+                elif self.path.startswith("/page-close"):  # 页面关闭:注销该页面
+                    _unregister_page(_page_id(self.path))
                     utils.http_json(self, {})
                 elif self.path == "/list":
                     utils.http_json(self, {"items": _scan_output_cached(home)})
@@ -1209,20 +1268,20 @@ class _Home:
                             args += ["--delay", str(int(body["delay"]))]
                         home.spawn(f"{name} 投稿", [*exe, *args], label=f"{name} 投稿")
                         utils.http_json(self, {"ok": True})
+                    elif self.path.startswith("/page-close"):
+                        # sendBeacon(pagehide)是 POST:注销该页面;
+                        # 是否退出由存活页面集合与宽限期判定,不在此直接退出
+                        _unregister_page(_page_id(self.path))
+                        utils.http_json(self, {"ok": True})
                     elif self.path == "/quit":
                         utils.http_json(self, {"ok": True})
                         if n == 0:
-                            # pagehide beacon(空 body):页面关闭/刷新时发出;
-                            # 延迟 2 秒退出,期间有新请求(刷新后的加载)则取消
-
-                            def _grace():
-                                try:
-                                    home.srv.shutdown()
-                                except Exception:  # noqa: BLE001
-                                    os._exit(0)
-
-                            home.grace_t = threading.Timer(2.0, _grace)
-                            home.grace_t.start()
+                            # 旧版页面/beacon 的兼容信号:仅当已无其它存活主页页面时
+                            # 才延迟退出;多开或其它页面仍在时不理会
+                            if _live_pages():
+                                _log("收到页面关闭信号,但仍有其它主页页面存活,继续运行")
+                            else:
+                                _grace_exit()
                         else:
                             # 网页「退出程序」按钮:延迟退出避免连接中断报错;先终止所有
                             # 存活子进程(编辑/打码是独立子进程,不杀会残留),os._exit 连内联任务一起终止
