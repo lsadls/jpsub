@@ -993,16 +993,16 @@ def auto_masks_path(video: Path) -> Path:
 
 _SKIN_BLOCK = 8  # 连通性判定用的网格块边长(像素)
 _SKIN_BLOCK_FRAC = 0.35  # 网格块被判为肤色的最低肤色像素占比(单块 .any() 会把零星噪点连成整屏)
-_SKIN_MIN_AREA_FRAC = 0.004  # 连通组最低肤色像素占比
-_SKIN_MAX_BOX_FRAC = 0.4  # 连通组外接矩形占整帧面积上限(超过视为成片「肤色样」背景,宁可漏检不可误伤)
-_SKIN_MAX_ENTRY_FRAC = 0.5  # 合并后区间条目占整帧面积上限(超过视为跨半屏误覆盖,丢弃该条目)
-_SKIN_MIN_FILL = 0.22  # 外接矩形内的肤色填充率下限
+_SKIN_MIN_AREA_FRAC = 0.003  # 连通组最低肤色像素占比
+_SKIN_MAX_BOX_FRAC = 0.58  # 连通组外接矩形占整帧面积上限(站立真人等大面积肤色区域可达半屏;保留 <60% 不整屏底线)
+_SKIN_MAX_ENTRY_FRAC = 0.58  # 合并后区间条目占整帧面积上限(保留 <60% 不整屏底线)
+_SKIN_MIN_FILL = 0.18  # 外接矩形内的肤色填充率下限
 _SKIN_MIN_GRAD = 3.0  # 区域平均灰度梯度下限(真实影像有噪点;纯色渲染面接近 0)
-_SKIN_MAX_GRAD = 26.0  # 区域平均灰度梯度上限(泥土/砖墙等斑驳纹理会被排除)
-_SKIN_MAX_LUM = 155.0  # 区域亮度上限(米色墙面/沙地偏亮,不算肤色)
-_SKIN_MAX_LUM_STD = 40.0  # 区域亮度标准差上限
-_SKIN_MAX_SAT = 0.47  # HSV 饱和度上限(过饱和的橙红物体不是真人肤色)
-_SKIN_CB_MIN = 105  # YCbCr 的 Cb 下限(偏青的暖色不是肤色)
+_SKIN_MAX_GRAD = 30.0  # 区域平均灰度梯度上限(泥土/砖墙等斑驳纹理会被排除)
+_SKIN_MAX_LUM = 210.0  # 区域亮度上限(过亮的高光/白墙不是肤色)
+_SKIN_MAX_LUM_STD = 60.0  # 区域亮度标准差上限
+_SKIN_MAX_SAT = 0.62  # HSV 饱和度上限(过饱和的橙红物体不是真人肤色)
+_SKIN_CB_MIN = 77  # YCbCr 的 Cb 下限(偏青的冷色不是肤色)
 _SKIN_MARGIN = 0.2  # 外接矩形外扩比例
 _SKIN_MIN_MARGIN = 12  # 外扩像素下限
 _SKIN_TRACK_IOU = 0.3  # 相邻采样秒归入同一区间的矩形 IoU 下限
@@ -1010,29 +1010,33 @@ _SKIN_EFFECT = "color:000000"  # 与手工基线一致:纯黑覆盖
 
 
 def _skin_mask(rgb) -> np.ndarray:
-    """肤色掩膜:RGB 规则与 YCbCr 规则须同时满足(单独任一条都会把米色/泥土判成肤色)。"""
+    """肤色掩膜:RGB 规则与 YCbCr 规则取并集(任一命中即算肤色)。
+
+    阈值整体下调以纳入深色/阴影/暖色调皮肤(旧版两规则取交集 + 高阈值会漏掉暗肤色);
+    仍要求像素偏暖(R 不低于 G、B)以排除中性灰/冷色区域。
+    """
     r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
     mx, mn = rgb.max(2), rgb.min(2)
     rgb_rule = (
-        (r > 95)
-        & (g > 40)
-        & (b > 20)
-        & ((mx - mn) > 15)
-        & (np.abs(r - g) > 15)
-        & (r > g)
-        & (r > b)
+        (r > 60)
+        & (g > 30)
+        & (b > 15)
+        & ((mx - mn) > 10)
+        & (r >= g)
+        & (r >= b)
+        & ((r - b) > 5)
     )
     y = 0.299 * r + 0.587 * g + 0.114 * b
     cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b
     cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b
     ycc = (
-        (cr >= 133)
-        & (cr <= 173)
+        (cr >= 130)
+        & (cr <= 180)
         & (cb >= _SKIN_CB_MIN)
-        & (cb <= 127)
-        & (y > 60)
+        & (cb <= 135)
+        & (y > 35)
     )
-    return rgb_rule & ycc
+    return rgb_rule | ycc
 
 
 def _skin_regions(rgb) -> list[tuple[int, int, int, int]]:
@@ -1097,14 +1101,19 @@ def _skin_regions(rgb) -> list[tuple[int, int, int, int]]:
                 continue
             mx_ = max(_SKIN_MIN_MARGIN, int(_SKIN_MARGIN * bw))
             my_ = max(_SKIN_MIN_MARGIN, int(_SKIN_MARGIN * bh))
-            boxes.append(
-                (
-                    max(0, x0 - mx_),
-                    max(0, y0 - my_),
-                    min(w, x1 + mx_) - max(0, x0 - mx_),
-                    min(h, y1 + my_) - max(0, y0 - my_),
-                )
-            )
+            # 外扩不得让本已较大的区域(如占屏半数的站立真人)突破「不整屏」上限,
+            # 否则整块区域会被后续合并阶段丢弃而漏检;此时按剩余额度收缩外扩量。
+            max_area = _SKIN_MAX_ENTRY_FRAC * w * h
+            while (bw + 2 * mx_) * (bh + 2 * my_) > max_area and (mx_ > 0 or my_ > 0):
+                if mx_ >= my_ and mx_ > 0:
+                    mx_ -= 1
+                elif my_ > 0:
+                    my_ -= 1
+            x0p, y0p = max(0, x0 - mx_), max(0, y0 - my_)
+            x1p, y1p = min(w, x1 + mx_), min(h, y1 + my_)
+            if (x1p - x0p) * (y1p - y0p) > max_area:
+                continue
+            boxes.append((x0p, y0p, x1p - x0p, y1p - y0p))
     return boxes
 
 
@@ -1227,24 +1236,44 @@ def _merge_tracks(
         groups.setdefault(find(i), []).append(i)
     entries: list[MaskEntry] = []
     for idxs in groups.values():
-        first = min(boxes_n[i][0] for i in idxs)
-        last = max(boxes_n[i][0] for i in idxs)
-        rect = boxes_n[idxs[0]][1]
-        for i in idxs[1:]:
-            rect = _union_rect(rect, boxes_n[i][1])
-        if rect[2] * rect[3] > _SKIN_MAX_ENTRY_FRAC * frame_area:
-            continue
-        entries.append(
-            MaskEntry(
-                start=first * step,
-                end=(last + 1) * step,
-                x=rect[0],
-                y=rect[1],
-                w=rect[2],
-                h=rect[3],
-                effect=_SKIN_EFFECT,
+        # 同组帧按时间序贪心累积并集:加入下一帧会使并集外接矩形超过「不整屏」上限时,
+        # 先输出当前区间再以该帧开启新区间(而非整段丢弃或只留单帧),兼顾覆盖与合并。
+        limit = _SKIN_MAX_ENTRY_FRAC * frame_area
+        rect: tuple[int, int, int, int] | None = None
+        first = last = 0
+        for i in sorted(idxs, key=lambda k: boxes_n[k][0]):
+            fi, ri = boxes_n[i]
+            if rect is None:
+                rect, first, last = ri, fi, fi
+                continue
+            cand = _union_rect(rect, ri)
+            if cand[2] * cand[3] > limit:
+                entries.append(
+                    MaskEntry(
+                        start=first * step,
+                        end=(last + 1) * step,
+                        x=rect[0],
+                        y=rect[1],
+                        w=rect[2],
+                        h=rect[3],
+                        effect=_SKIN_EFFECT,
+                    )
+                )
+                rect, first, last = ri, fi, fi
+            else:
+                rect, last = cand, fi
+        if rect is not None and rect[2] * rect[3] <= limit:
+            entries.append(
+                MaskEntry(
+                    start=first * step,
+                    end=(last + 1) * step,
+                    x=rect[0],
+                    y=rect[1],
+                    w=rect[2],
+                    h=rect[3],
+                    effect=_SKIN_EFFECT,
+                )
             )
-        )
     return sorted(entries, key=lambda m: (m.start, m.x, m.y))
 
 
