@@ -9,11 +9,12 @@
 - **指针**: 入口 `README.md`；分主题 `docs/`；历史 `changelog.md`；规格 `docs/comet/specs/`。
 
 ## Current Focus
-> 更新于: 2026-10-08
+> 更新于: 2026-10-09
 
-- **当前焦点**: Comet Native change `panel-space-efficiency`（home/edit/mask 三页面板分组收敛为行内标签式、mask 打码列表放大），worktree 分支 `comet/panel-space-efficiency`，phase=build / stage=repairing。
+- **当前焦点**: 已把「烤肉汉化排版」的自研字幕能力移植进 jpsub（Comet change `port-karou-tools`，已 verify 通过并 merge 进 main）；其后补完 AI 预设/术语表/用量的网页入口、token 单价 `.env` 化、新子命令文档与 changelog。
 - **下一步**:
-  - [ ] 完成 panel-space-efficiency 的 build → verify → archive
+  - [ ] 视需要把 AI 校对/术语表/预设 也接进译文调整器（edit）
+  - [ ] 视需要补 `voice` / `text` 的主页入口（main 既有缺口，非移植引入）
 - **阻塞项**: 无
 
 ## Decision Highlights (Still Binding)
@@ -28,6 +29,10 @@
 | 自动去人肤色判据取并集 | RGB 规则 ∪ YCbCr 规则；外接矩形/合并上限 0.58，仍 < 整帧 60% 保留「不整屏」底线 |
 | 敏感字打码独立文件 | 写 `.jpsub/masks.sensitive.json`，不触碰手工 `masks.json` |
 | Comet native 工作流 | `.comet/config.yaml` default_workflow=native，artifact_root=`docs`，规格在 `docs/comet/specs/` |
+| AI 配置优先级 | 命令行/环境变量 > 预设（`~/.jpsub/api-presets.json`）> `.env`；`resolve_config()` 是唯一入口 |
+| token 单价可配 | 不在代码硬编码，读 `settings.PRICE_HIT/PRICE_IN/PRICE_OUT`（元/百万 token），`.env` 可覆盖 |
+| 本地状态文件都在 `~/.jpsub/` | `usage.json`（用量累计）、`api-presets.json`（预设）、`glossary.txt`（全局术语表）；工作目录另有 `glossary.txt` |
+| 字幕导入统一走 `jpsub/subtitle.py` | CLI 的 import/submerge/layout/convert 与主页「字幕文件」区共用同一实现，不复制逻辑 |
 
 ## Routing Rules（意图驱动）
 
@@ -74,7 +79,9 @@
 3. Q: 怎么测试？ A: `pytest`；端到端 `tests/verify_*.py` → 见 `pyproject.toml` / `tests/`
 4. Q: 打码/去人的规格？ A: `docs/comet/specs/deman/spec.md`、`docs/comet/specs/sensitive-mask/spec.md`
 5. Q: 时间轴键格式？ A: 军方时间 `MMSS`/`HHMMSS` → `docs/cli.md` / `changelog.md` (9)→
-6. Q: 最近改了什么？ A: `changelog.md` 顶部
+6. Q: 导入现成字幕 / 合并碎片 / 排版？ A: `jpsub import|submerge|layout|convert` → `docs/cli.md` 第 18 节
+7. Q: AI 密钥/模型怎么切换？ A: `jpsub preset` 或主页「AI 接口/预设」→ `docs/cli.md` 第 20 节
+8. Q: 最近改了什么？ A: `changelog.md` 顶部
 
 <!-- MACHINE_BLOCK_END -->
 

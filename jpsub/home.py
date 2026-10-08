@@ -142,6 +142,8 @@ label.chk{display:flex;align-items:center;gap:4px;cursor:pointer}
 <button onclick=cmd('translate',['--force'])>重翻</button>
 <button onclick=cmd('proofread',[])>AI 校对</button>
 <button onclick=showUsage()>翻译用量</button>
+<button onclick=openApi()>AI 接口/预设</button>
+<button onclick=openGlossary()>术语表</button>
 </div></div>
 <div class=sec><b class=st>字幕文件</b>
 <span class=lbl>字幕文件</span>
@@ -224,6 +226,8 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b style=color:#aaa>① 删除(不可恢复,对选中项)</b><br>
 <b>删除工作目录</b> — 删除选中条目的 <名称>.jpsub(字幕/译文全删,视频保留)<br>
 <b>删除视频</b> — 删除选中条目的视频文件(工作目录保留)<br>
+<b>AI 接口/预设</b> — 弹窗管理多组 API 供应商配置(名称/端点/密钥/模型),「★当前」那组用于翻译与校对;也可用 <code>jpsub preset</code> 命令管理<br>
+<b>术语表</b> — 弹窗查看/编辑名词对照表(全局 <code>~/.jpsub/glossary.txt</code> 或选中条目的工作目录 <code>glossary.txt</code>),可一键识别候选角色名追加待填<br>
 <b style=color:#aaa>其他</b><br>
 <b>② 打开文件夹</b> — 用系统文件管理器打开 output 目录<br>
 <b>③ 运行脚本</b> — 每行一条任务(等价 jpsub -s)批量执行,输出显示在下方<br>
@@ -232,6 +236,51 @@ https://www.nicovideo.jp/watch/sm12345678 --comment 剧场
 <b>Debug 日志</b> — 勾选后所有按钮发起的任务自动加 --debug,抽帧/筛选/OCR/合并全流程写到 logs/debug.log(排查时间轴异常用;批量脚本不受影响)<br>
 <b>退出程序</b> — 右上角按钮,终止程序(含正在运行的任务)<br>
 force 操作与覆盖旧文件前都会自动备份到工作目录 backup/时间戳/ 文件夹
+</div>
+<div id=apibox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:103;overflow:auto" onclick="if(event.target===this)this.style.display='none'">
+<div style="margin:60px auto;width:min(600px,94vw);background:#252525;border:1px solid #555;border-radius:8px;padding:14px">
+<h3 style="margin:0 0 10px">AI 接口预设 <button onclick=$('apibox').style.display='none'>关闭</button></h3>
+<div class=hint style="color:#888;margin-bottom:8px">保存多组供应商配置(名称 + 端点 + 密钥 + 模型),翻译/校对时使用「当前选中」的一组;优先级:命令行/环境变量 &gt; 预设 &gt; .env</div>
+<div class=row style="align-items:center;gap:6px;flex-wrap:wrap">
+<span class=lbl>选择</span>
+<select id=apiSel onchange=apiUse() style="background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px;min-width:160px"></select>
+<span id=apiCur style="color:#fc6;font-size:12px"></span>
+</div>
+<label style="display:block;margin-top:8px">名称</label>
+<input id=apiName type=text style="width:100%;box-sizing:border-box" placeholder="如 中转A / 官方B">
+<label style="display:block;margin-top:6px">API 端点 (api_base)</label>
+<input id=apiBase type=text style="width:100%;box-sizing:border-box" placeholder="https://.../v1">
+<label style="display:block;margin-top:6px">API Key</label>
+<input id=apiKey type=text style="width:100%;box-sizing:border-box" placeholder="sk-...  (留空则保留原值)">
+<label style="display:block;margin-top:6px">模型</label>
+<input id=apiModel type=text style="width:100%;box-sizing:border-box" placeholder="如 deepseek-chat">
+<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+<button onclick=apiSave()>保存并设为当前</button>
+<button onclick=apiDel()>删除</button>
+<span id=apimsg style=color:#fc6></span>
+</div>
+</div>
+</div>
+<div id=glbox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:104;overflow:auto" onclick="if(event.target===this)this.style.display='none'">
+<div style="margin:50px auto;width:min(720px,94vw);background:#252525;border:1px solid #555;border-radius:8px;padding:14px">
+<h3 style="margin:0 0 10px">术语表 <button onclick=$('glbox').style.display='none'>关闭</button></h3>
+<div class=row style="align-items:center;gap:6px;flex-wrap:wrap">
+<span class=lbl>范围</span>
+<select id=glscope onchange=glossLoad() style="background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:4px">
+<option value=global>全局 ~/.jpsub/glossary.txt</option>
+<option value=work>当前工作目录(② 选中)glossary.txt</option>
+</select>
+<button onclick=glossCand()>识别角色名</button>
+<span id=glmsg style=color:#fc6></span>
+</div>
+<div style="color:#888;margin:6px 0">每行「原文 Tab 译文」(空格分隔也可以),# 开头为注释;改动后需重翻对应句子才生效</div>
+<textarea id=gltext rows=16 spellcheck=false style="width:100%;box-sizing:border-box;background:#181818;color:#ddd;border:1px solid #555;border-radius:4px;font:13px monospace;padding:6px;resize:vertical"></textarea>
+<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<button onclick=glossSave()>保存</button>
+<button onclick=glossLoad()>重新载入</button>
+<span id=glpath style="color:#888;font-size:12px"></span>
+</div>
+</div>
 </div>
 <div id=cropbox style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;overflow:auto">
 <div style="margin:24px auto;width:max-content;max-width:94vw;background:#252525;border:1px solid #555;border-radius:8px;padding:12px">
@@ -358,6 +407,76 @@ async function runSub(){
 async function showUsage(){
   const j=await(await fetch('/usage')).json();
   alert(j.text||'暂无用量记录');
+}
+let apiCache=[];
+async function openApi(){
+  $('apibox').style.display='block';
+  await apiLoad();
+}
+async function apiLoad(){
+  const j=await(await fetch('/presets')).json();
+  if(!j.ok)return alert('失败:'+j.err);
+  apiCache=j.presets||[];
+  const sel=$('apiSel');
+  sel.innerHTML=apiCache.map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.name===j.current?' ★当前':''}</option>`).join('')
+    ||'<option value="">(暂无预设)</option>';
+  $('apiCur').textContent=j.current?('当前:'+j.current):'当前:(未选中)';
+  const cur=apiCache.find(p=>p.name===j.current);
+  if(cur)fillApi(cur);
+}
+function fillApi(p){
+  $('apiName').value=p.name;$('apiBase').value=p.api_base||'';
+  $('apiModel').value=p.model||'';$('apiKey').value='';
+  $('apiKey').placeholder=p.has_key?'sk-...  (留空则保留原值)':'sk-...';
+}
+async function apiUse(){
+  const name=$('apiSel').value;if(!name)return;
+  const p=apiCache.find(x=>x.name===name);if(p)fillApi(p);
+  const j=await post('/presets',{action:'use',name});
+  if(!j.ok)alert('失败:'+j.err);else apiLoad();
+}
+async function apiSave(){
+  const j=await post('/presets',{action:'save',name:$('apiName').value.trim(),
+    api_base:$('apiBase').value.trim(),api_key:$('apiKey').value.trim(),
+    model:$('apiModel').value.trim()});
+  $('apimsg').textContent=j.ok?'已保存':'失败:'+j.err;
+  if(!j.ok)alert('失败:'+j.err);else apiLoad();
+}
+async function apiDel(){
+  const name=$('apiSel').value;if(!name)return;
+  if(!confirm('确定删除预设 '+name+' ?'))return;
+  const j=await post('/presets',{action:'del',name});
+  if(!j.ok)alert('失败:'+j.err);else apiLoad();
+}
+async function openGlossary(){
+  $('glbox').style.display='block';
+  await glossLoad();
+}
+function glossScope(){return {scope:$('glscope').value,name:selName||''}}
+async function glossLoad(){
+  const s=glossScope();
+  const j=await(await fetch('/glossary?scope='+encodeURIComponent(s.scope)+'&name='+encodeURIComponent(s.name))).json();
+  if(!j.ok){$('glmsg').textContent='失败:'+j.err;$('glpath').textContent='';return}
+  $('glpath').textContent=j.path;
+  $('gltext').value=j.text||'';
+  $('glmsg').textContent=j.count+' 条';
+}
+async function glossSave(){
+  const s=glossScope();
+  const j=await post('/glossary',{scope:s.scope,name:s.name,text:$('gltext').value});
+  $('glmsg').textContent=j.ok?('已保存,'+j.count+' 条'):('失败:'+j.err);
+}
+async function glossCand(){
+  if(!selName)return alert('请先在 ② 选中一个工作目录条目');
+  const j=await(await fetch('/glossary-candidates?name='+encodeURIComponent(selName))).json();
+  if(!j.ok)return alert('失败:'+j.err);
+  if(!j.candidates.length)return alert('未识别出候选角色名');
+  const have=$('gltext').value;
+  const keys=new Set(have.split('\n').map(l=>l.split(/[\t ]/)[0].trim()));
+  const add=j.candidates.filter(c=>!keys.has(c));
+  if(!add.length)return $('glmsg').textContent='候选角色名已全部在表中';
+  $('gltext').value=(have&&!have.endsWith('\n')?have+'\n':have)+add.map(c=>c+'\t').join('\n')+'\n';
+  $('glmsg').textContent='已追加 '+add.length+' 条候选,填写译名后点保存';
 }
 async function cmd(sub,flags){
   const j=await post('/cmd',{sub,flags,name:selName,
@@ -621,6 +740,20 @@ setInterval(refresh,3000);setInterval(refreshJobs,1000);
 def _work_of_name(root: Path, name: str) -> Path:
     """按列表名找工作目录:<name> 目录。"""
     return utils.work_of_name(root, name)
+
+
+def _glossary_count(text: str) -> int:
+    """术语表有效条目数(排除空行与 # 注释)。"""
+    return sum(1 for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#"))
+
+
+def _glossary_path(root: Path, scope: str, name: str) -> tuple[Path, str]:
+    """术语表文件路径:global 为 ~/.jpsub/glossary.txt,work 为选中工作目录下的 glossary.txt。"""
+    if scope == "work":
+        if not name:
+            return Path(), "请先在 ② 选中一个工作目录条目"
+        return _work_of_name(root, name) / "glossary.txt", ""
+    return Path.home() / ".jpsub" / "glossary.txt", ""
 
 
 def _scan_output(root: Path) -> list[dict]:
@@ -1078,6 +1211,23 @@ class _Home:
                         utils.http_json(self, {"ok": False, "err": str(e)})
                         return
                     utils.http_json(self, {"ok": True, "prefix": load_prefix(), **meta})
+                elif self.path == "/presets":
+                    # API 配置预设(~/.jpsub/api-presets.json):网页里选择/保存供应商
+                    from . import aiassist as _a
+
+                    d = _a.load_presets()
+                    items = [
+                        {
+                            "name": n,
+                            "api_base": c.get("api_base", ""),
+                            "model": c.get("model", ""),
+                            "has_key": bool(c.get("api_key")),
+                        }
+                        for n, c in d["presets"].items()
+                    ]
+                    utils.http_json(
+                        self, {"ok": True, "current": d.get("current", ""), "presets": items}
+                    )
                 elif self.path == "/usage":
                     # 翻译用量统计(持久化在 ~/.jpsub/usage.json)
                     from . import aiassist
@@ -1085,6 +1235,42 @@ class _Home:
                     utils.http_json(
                         self,
                         {"ok": True, "text": aiassist.usage_summary()},
+                    )
+                elif self.path.startswith("/glossary-candidates"):
+                    # 从选中工作目录的原文自动识别候选角色名
+                    import urllib.parse
+
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    name = q.get("name", [""])[0]
+                    seg_file = handoff.seg_path(_work_of_name(home.root, name))
+                    if not seg_file.is_file():
+                        utils.http_json(self, {"ok": False, "err": f"找不到 {seg_file.name}"})
+                        return
+                    from . import aiassist as _a
+
+                    segs = handoff.read_segments(seg_file)
+                    cands = _a.auto_name_candidates([x.text for x in segs if x.text])
+                    utils.http_json(self, {"ok": True, "candidates": cands})
+                elif self.path.startswith("/glossary"):
+                    # 读取术语表(原文<Tab>译文 文本)
+                    import urllib.parse
+
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    fp, err = _glossary_path(
+                        home.root, q.get("scope", ["global"])[0], q.get("name", [""])[0]
+                    )
+                    if err:
+                        utils.http_json(self, {"ok": False, "err": err})
+                        return
+                    text = fp.read_text(encoding="utf-8") if fp.is_file() else ""
+                    utils.http_json(
+                        self,
+                        {
+                            "ok": True,
+                            "path": str(fp),
+                            "text": text,
+                            "count": _glossary_count(text),
+                        },
                     )
                 elif self.path == "/jobs":
                     for j in home.jobs:
@@ -1302,6 +1488,67 @@ class _Home:
                             show=True,
                         )
                         utils.http_json(self, {"ok": True})
+                    elif self.path == "/presets":
+                        # API 配置预设:action=save/use/del
+                        from . import aiassist as _a
+
+                        act = str(body.get("action", "")).strip()
+                        name = str(body.get("name", "")).strip()
+                        if act == "save":
+                            if not name:
+                                utils.http_json(self, {"ok": False, "err": "请填写预设名"})
+                                return
+                            old = _a.load_presets()["presets"].get(name) or {}
+                            cfg = {
+                                "api_base": str(body.get("api_base", "")).strip()
+                                or old.get("api_base", ""),
+                                "api_key": str(body.get("api_key", "")).strip()
+                                or old.get("api_key", ""),
+                                "model": str(body.get("model", "")).strip()
+                                or old.get("model", ""),
+                            }
+                            if not (cfg["api_base"] and cfg["model"]):
+                                utils.http_json(
+                                    self, {"ok": False, "err": "api_base 与 model 不能为空"}
+                                )
+                                return
+                            _a.set_preset(name, cfg)
+                            utils.http_json(self, {"ok": True, "current": name})
+                        elif act == "use":
+                            if not _a.get_preset(name):
+                                utils.http_json(self, {"ok": False, "err": f"不存在预设:{name}"})
+                                return
+                            d = _a.load_presets()
+                            d["current"] = name
+                            _a.save_presets(d)
+                            utils.http_json(self, {"ok": True, "current": name})
+                        elif act == "del":
+                            if not _a.delete_preset(name):
+                                utils.http_json(self, {"ok": False, "err": f"不存在预设:{name}"})
+                                return
+                            utils.http_json(self, {"ok": True})
+                        else:
+                            utils.http_json(self, {"ok": False, "err": f"未知操作:{act}"})
+                    elif self.path == "/glossary":
+                        # 保存术语表:整段文本原子写盘
+                        fp, err = _glossary_path(
+                            home.root,
+                            str(body.get("scope", "global")).strip(),
+                            str(body.get("name", "")).strip(),
+                        )
+                        if err:
+                            utils.http_json(self, {"ok": False, "err": err})
+                            return
+                        text = str(body.get("text", ""))
+                        try:
+                            fp.parent.mkdir(parents=True, exist_ok=True)
+                            tmp = fp.with_name(fp.name + ".tmp")
+                            tmp.write_text(text, encoding="utf-8")
+                            tmp.replace(fp)
+                        except OSError as e:
+                            utils.http_json(self, {"ok": False, "err": str(e)})
+                            return
+                        utils.http_json(self, {"ok": True, "count": _glossary_count(text)})
                     elif self.path == "/runcmd":
                         # 一次性自定义命令:整条命令 = jpsub 子命令 + 参数
                         import shlex as _shlex

@@ -70,6 +70,10 @@ HISTORY_KEEP = 3             # 翻译对话只保留最近几轮历史(0=全保�
 PROMPT_FILE = ""             # 翻译提示词文件,留空用内置默认;支持 {src}/{tgt}/{punct} 占位
 GLOSSARY_FILE = "glossary.txt"  # 默认名词对照表路径(工作目录 glossary.txt 与 --glossary 优先级更高,加载顺序见 cli.md 第 13 节)
 
+# token 单价(人民币/百万 token),用于翻译结束与主页「翻译用量」的费用估算;按端点实际价格修改
+PRICE_HIT = 0.02   # 命中缓存(缓存输入)
+PRICE_IN = 1.0     # 未命中输入
+PRICE_OUT = 2.0    # 输出
 # ASS 字幕样式(位置交给播放器默认处理)
 FONT = "微软雅黑"  # 字体
 FONT_SIZE = 20  # 字号

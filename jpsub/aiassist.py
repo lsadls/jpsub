@@ -11,6 +11,8 @@ import re
 import tempfile
 from pathlib import Path
 
+from . import settings
+
 # ---------- 路径 ----------
 
 
@@ -41,10 +43,10 @@ def _atomic_write(path: Path, obj) -> None:
 
 # ---------- 用量统计(持久化) ----------
 
-# 价格估算(人民币/百万 token):命中缓存 / 未命中输入 / 输出
-PRICE_HIT = 0.02
-PRICE_IN = 1.0
-PRICE_OUT = 2.0
+# 价格估算(人民币/百万 token):命中缓存 / 未命中输入 / 输出;可在 .env 覆盖
+PRICE_HIT = settings.PRICE_HIT
+PRICE_IN = settings.PRICE_IN
+PRICE_OUT = settings.PRICE_OUT
 
 
 def _empty_usage() -> dict:

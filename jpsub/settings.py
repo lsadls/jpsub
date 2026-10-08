@@ -81,6 +81,10 @@ BATCH_CHAR_TARGET = 1500  # 动态批大小:每批翻译的字符总量上限,�
 CENSOR_RESET = False  # 内容审查触发时清空对话历史重建上下文:True=payload 级审查的 API 用(组内命中 2 次自动清史);False=只查单句的 API,保留历史
 REASONING_EFFORT = "none"  # 关闭推理模型思考省输出 token:"none"=关闭;留空=不发送该参数(部分端点不认会报错)
 HISTORY_KEEP = 3  # 翻译对话历史保留最近几轮(不含 system);0=全保留。长对话每批重发全部历史,砍掉旧轮省 prompt token
+# token 单价(人民币/百万 token):命中缓存 / 未命中输入 / 输出。按所用端点的实际价格改这里
+PRICE_HIT = 0.02
+PRICE_IN = 1.0
+PRICE_OUT = 2.0
 # 源语言:直接用百度 OCR 语言简写,OCR 与翻译提示词共用,无需两处配置
 # 常用:JAP=日语 ENG=英语 CHN_ENG=中英 KOR=韩语 FRE=法语 GER=德语 RUS=俄语 SPA=西班牙语
 SOURCE_LANG = "JAP"

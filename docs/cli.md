@@ -180,6 +180,15 @@ CROP_PRESETS = {"1": "0.03:0.03:0.02:0.02"}  # --crop 1 -> 0.03:0.03:0.02:0.02
 
 加载顺序（后加载覆盖同名词条）：全局 `~/.jpsub/glossary.txt` → 工作目录 `glossary.txt` → `.env` 的 `GLOSSARY_FILE` → `--glossary` 指定文件。
 
+自动识别候选角色名（单独成行、长度 ≤12、无标点/空格、出现 ≥2 次），确认后加入对照表：
+
+```
+.venv\Scripts\jpsub.exe glossary output/sm114514.jpsub            # 只打印候选
+.venv\Scripts\jpsub.exe glossary output/sm114514.jpsub --append glossary.txt   # 追加「词=空」待填
+```
+
+主页「术语表」按钮可直接查看/编辑（全局 `~/.jpsub/glossary.txt` 与当前工作目录 `glossary.txt`），并一键从原文追加候选。
+
 词条**不随提示词发送**，而是在发送前把原文里的词条直接替换成译文（长词优先，⟦⟧标记提醒 AI 原样保留），专有名词必准，也大幅降低含敏感词素材被 API 拒译的概率。改动对照表后需重翻对应句子才生效（旧译文不自动改）。
 
 ## 14. 多语言翻译
@@ -240,3 +249,49 @@ TARGET_LANG = "简体中文"   # 目的语言
 同时把多帧拼接图存到 `logs/debug/ocr_batch_<首帧名>.png`，可直接查看分隔带里的帧编号是否绘制正确。
 
 不传 `--debug` 时零开销、不落盘。主页 ① 的 **Debug 复选框** 勾选后，按钮发起的任务自动带上 `--debug`（详见 [home.md](home.md)）。
+
+## 18. 字幕文件导入与整理（import / submerge / layout / convert）
+
+把已有的字幕文件（SRT/ASS/TXT）接进 jpsub 流水线，或做格式整理（移植自「烤肉汉化排版」的合并/排版能力）。编码默认自动识别（UTF-8/16、GB18030、Shift-JIS、EUC-KR、Big5，可用 `--enc` 指定）。
+
+```
+# 导入到工作目录 → .jpsub/segments.json，之后可直接 render / edit / translate
+.venv\Scripts\jpsub.exe import D:\sub.srt --work output/sm114514.jpsub
+
+# 合并碎片/重复条目后另存（不建工作目录）
+.venv\Scripts\jpsub.exe submerge D:\sub.srt -o D:\sub.merged.ass --out-format ass
+
+# 排版：把空格/换行转 \N（时间轴不变）
+.venv\Scripts\jpsub.exe layout D:\sub.ass
+
+# 格式互转，不改时间与文本
+.venv\Scripts\jpsub.exe convert D:\sub.txt --out-format srt
+```
+
+`import` / `submerge` 共用合并参数：`--merge-cap`（间隔上限秒，默认 3）、`--same-style`（只合并同样式，ASS 用）、`--smart`（智能去重，默认开）、`--layout`（顺带排版）。合并判据与烤肉一致：包含/前缀相似/模糊子序列去重，单行短名字行并入后立即封组防串句。主页 ①「字幕文件」区填路径选操作即可执行。
+
+## 19. AI 校对（proofread）
+
+对工作目录已有译文再送一次 AI，按编号行协议逐条校对（保持原意、人物语气与字幕长度），失败批次保留原译文不动：
+
+```
+.venv\Scripts\jpsub.exe proofread output/sm114514.jpsub --dry-run     # 只看条数
+.venv\Scripts\jpsub.exe proofread output/sm114514.jpsub --instruct "统一称呼为「前辈」"
+```
+
+主页「AI 校对」按钮等价于此。逐条校对完不自动生成 ASS，仍需 `render`。
+
+## 20. API 预设（preset）与用量（usage）
+
+```
+.venv\Scripts\jpsub.exe preset list
+.venv\Scripts\jpsub.exe preset add 中转A --api-base https://xx/v1 --api-key sk-xx --model deepseek-chat
+.venv\Scripts\jpsub.exe preset use 中转A
+.venv\Scripts\jpsub.exe preset del 中转A
+
+.venv\Scripts\jpsub.exe usage          # token 用量与费用估算
+.venv\Scripts\jpsub.exe usage --json
+.venv\Scripts\jpsub.exe usage --clear
+```
+
+预设存 `~/.jpsub/api-presets.json`，用量存 `~/.jpsub/usage.json`（跨进程累计）。优先级：命令行/环境变量 > 预设 > `.env`。单价在 `.env` 的 `PRICE_HIT`/`PRICE_IN`/`PRICE_OUT`（元/百万 token）按所用端点实际价格修改。接口报错会转成可读提示（额度不足/被 Cloudflare 拦截/网关后端故障等），不再直接抛整页 HTML。

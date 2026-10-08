@@ -514,12 +514,16 @@ def translate_texts_parallel(
         for g in groups:
             ex.submit(_run_group, g)
     rep.close()
-    if not quiet:  # token 消耗与价格估算(¥0.02/百万命中,¥1.00/百万未命中,¥2.00/百万输出)
+    if not quiet:  # token 消耗与价格估算(单价见 settings.PRICE_*,可在 .env 覆盖)
         us = [u for u in _USAGE[u0:] if u]
         pt = sum(u.get("prompt_tokens", 0) for u in us)
         hit = sum((u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) for u in us)
         ct = sum(u.get("completion_tokens", 0) for u in us)
-        cost = (hit * 0.02 + (pt - hit) * 1.0 + ct * 2.0) / 1e6
+        cost = (
+            hit * settings.PRICE_HIT
+            + (pt - hit) * settings.PRICE_IN
+            + ct * settings.PRICE_OUT
+        ) / 1e6
         print(f"token 消耗: 命中{hit} 未命中{pt - hit} 输出{ct} ≈¥{cost:.4f}")
     if fails and fail_log:  # 失败句落盘,供用户提取关键词加进 glossary
         try:
