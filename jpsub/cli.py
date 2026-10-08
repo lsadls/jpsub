@@ -142,6 +142,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         a.add_argument("--api-key", help="默认 $JPSUB_API_KEY/$OPENAI_API_KEY")
         a.add_argument("--model", help="模型名,默认 $JPSUB_MODEL")
         a.add_argument(
+            "--preset",
+            default=None,
+            help="使用已保存的 API 配置预设(~/.jpsub/api-presets.json;默认用当前选中项)",
+        )
+        a.add_argument(
             "--glossary",
             type=Path,
             default=None,
@@ -260,6 +265,195 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="把每行按「。」拆成单句逐句翻译后拼回,单句有问题不连累整行",
     )
     add_api(x)
+
+    def add_subtitle_in(a):
+        a.add_argument(
+            "--enc",
+            default="auto",
+            help="输入文件编码(auto=自动识别;或 utf-8/gb18030/shift_jis/euc-kr/big5/utf-16le/utf-16be)",
+        )
+        a.add_argument(
+            "--format",
+            choices=("auto", "srt", "ass", "txt"),
+            default="auto",
+            help="输入格式(默认按内容自动判定)",
+        )
+        a.add_argument(
+            "--cap",
+            type=float,
+            default=3.0,
+            help="合并的时间间隔上限秒(相邻两条间隔不超过它才可能合并,默认 3)",
+        )
+        a.add_argument(
+            "--merge",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="按间隔上限合并碎片/打字帧并智能去重(默认开;--no-merge 保留原条目)",
+        )
+        a.add_argument(
+            "--same-style",
+            action="store_true",
+            help="仅合并相同样式的条目(ASS 有用;默认合并不同样式)",
+        )
+        a.add_argument(
+            "--smart",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="合并时智能去重(包含/前缀相似/模糊子序列,默认开)",
+        )
+        a.add_argument(
+            "--layout",
+            action="store_true",
+            help="顺带把文本里的空格/换行转成 \\N",
+        )
+        a.add_argument(
+            "--layout-space",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="排版转换时把空格转 \\N(默认开)",
+        )
+        a.add_argument(
+            "--layout-break",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="排版转换时把换行转 \\N(默认开)",
+        )
+
+    im = sub.add_parser(
+        "import", help="把现成字幕文件(SRT/ASS/TXT)导入工作目录 segments.json"
+    )
+    im.add_argument("file", type=Path, help="要导入的字幕文件")
+    im.add_argument(
+        "-o",
+        "--work",
+        type=Path,
+        required=True,
+        help="目标工作目录(写 <工作目录>/.jpsub/segments.json)",
+    )
+    add_subtitle_in(im)
+
+    sm = sub.add_parser(
+        "submerge", help="合并字幕文件里的碎片/重复条目并导出(不建工作目录)"
+    )
+    sm.add_argument("file", type=Path)
+    sm.add_argument(
+        "-o", "--output", type=Path, help="输出文件(默认 <原名>.merged.<格式>)"
+    )
+    sm.add_argument(
+        "--out-format",
+        choices=("srt", "ass", "txt"),
+        default=None,
+        help="输出格式(默认同输入)",
+    )
+    add_subtitle_in(sm)
+
+    ly = sub.add_parser("layout", help="字幕排版:空格/换行 -> \\N(时间轴不变)")
+    ly.add_argument("file", type=Path)
+    ly.add_argument(
+        "-o", "--output", type=Path, help="输出文件(默认 <原名>.layout.<格式>)"
+    )
+    ly.add_argument(
+        "--out-format",
+        choices=("srt", "ass", "txt"),
+        default=None,
+        help="输出格式(默认同输入)",
+    )
+    ly.add_argument("--enc", default="auto", help="输入文件编码(默认自动识别)")
+    ly.add_argument(
+        "--format",
+        choices=("auto", "srt", "ass", "txt"),
+        default="auto",
+        help="输入格式",
+    )
+    ly.add_argument(
+        "--space",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="空格转 \\N(默认开)",
+    )
+    ly.add_argument(
+        "--break",
+        dest="break_",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="换行转 \\N(默认开)",
+    )
+
+    cv = sub.add_parser(
+        "convert", help="字幕格式转换(SRT/ASS/TXT 互转,不改时间与文本)"
+    )
+    cv.add_argument("file", type=Path)
+    cv.add_argument(
+        "-o", "--output", type=Path, help="输出文件(默认 <原名>.<格式>)"
+    )
+    cv.add_argument(
+        "--out-format",
+        choices=("srt", "ass", "txt"),
+        required=True,
+        help="输出格式",
+    )
+    cv.add_argument("--enc", default="auto", help="输入文件编码(默认自动识别)")
+    cv.add_argument(
+        "--format",
+        choices=("auto", "srt", "ass", "txt"),
+        default="auto",
+        help="输入格式",
+    )
+
+    pr = sub.add_parser(
+        "proofread", help="对工作目录已有译文做 AI 校对(编号行协议,保持原意/语气/长度)"
+    )
+    pr.add_argument(
+        "-o", "--work", type=Path, required=True, help="工作目录(读 <工作目录>/.jpsub/segments.json)"
+    )
+    pr.add_argument(
+        "--instruct",
+        default=None,
+        help="校对要求(默认「保持原意、人物语气和字幕长度,修正错译、漏译和不自然表达。」)",
+    )
+    pr.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只显示将校对的条目数,不请求 AI",
+    )
+    add_api(pr)
+    pr.set_defaults(batch_size=10)  # 校对每批行数(默认 10),复用 add_api 的 --batch-size
+
+    ps = sub.add_parser("preset", help="管理 API 配置预设(~/.jpsub/api-presets.json)")
+    pss = ps.add_subparsers(dest="preset_cmd")
+    pss.add_parser("list", help="列出全部预设与当前选中项")
+    ps_add = pss.add_parser("add", help="保存/覆盖一组预设")
+    ps_add.add_argument("name", help="预设名")
+    ps_add.add_argument("--api-base")
+    ps_add.add_argument("--api-key")
+    ps_add.add_argument("--model")
+    ps_add.add_argument("--no-select", action="store_true", help="保存但不切换为当前组")
+    ps_use = pss.add_parser("use", help="切换当前预设")
+    ps_use.add_argument("name")
+    ps_del = pss.add_parser("del", help="删除预设")
+    ps_del.add_argument("name")
+
+    gl = sub.add_parser(
+        "glossary", help="术语表:从工作目录原文自动识别候选角色名"
+    )
+    gl.add_argument(
+        "-o", "--work", type=Path, required=True, help="工作目录(读 segments.json 原文)"
+    )
+    gl.add_argument("--top", type=int, default=30, help="候选数量上限(默认 30)")
+    gl.add_argument(
+        "--append",
+        type=Path,
+        default=None,
+        help="把候选(词=空)追加写入该术语表文件;不给则只打印",
+    )
+
+    us = sub.add_parser("usage", help="查看/清空本地记录的 AI 调用 token 用量")
+    us.add_argument(
+        "--clear", action="store_true", help="清空本地用量记录"
+    )
+    us.add_argument(
+        "--json", action="store_true", help="以 JSON 输出(便于脚本处理)"
+    )
 
     m = sub.add_parser("mask", help="打码选取器:鼠标框选区域,生成 masks.json")
     m.add_argument("video", type=Path)
@@ -1560,6 +1754,235 @@ def _status(args) -> None:
     )
 
 
+def _import_subtitle(args) -> Path:
+    """把字幕文件导入工作目录:解析/编码识别/按需合并去重/排版,写 segments.json。"""
+    from . import subtitle
+
+    if not args.file.is_file():
+        raise SystemExit(f"错误:找不到字幕文件 {args.file}")
+    fmt = None if args.format == "auto" else args.format
+    seg_file, n = subtitle.import_to_work(
+        args.file,
+        args.work,
+        enc=args.enc,
+        fmt=fmt,
+        cap=args.cap if args.merge else None,
+        merge=args.merge,
+        require_same_style=args.same_style,
+        smart=args.smart,
+        layout=args.layout,
+        layout_space=args.layout_space,
+        layout_newline=args.layout_break,
+    )
+    print(f"已导入 {n} 条 -> {seg_file}")
+    print(f"接着可用:jpsub translate {args.work} 或 jpsub edit {args.work}")
+    return seg_file
+
+
+def _read_subtitle_in(args):
+    """读入字幕文件并解析,返回 (Parsed, 格式, 编码标签)。"""
+    from . import subtitle
+
+    if not args.file.is_file():
+        raise SystemExit(f"错误:找不到字幕文件 {args.file}")
+    text, label = subtitle.read_text(args.file, args.enc)
+    fmt = None if args.format == "auto" else args.format
+    parsed = subtitle.parse(text, fmt)
+    if not parsed.entries:
+        raise SystemExit(f"错误:未能从 {args.file} 解析出任何字幕条目(格式={parsed.fmt})")
+    return parsed, parsed.fmt, label
+
+
+def _out_path(args, suffix: str, fmt: str) -> Path:
+    out = getattr(args, "output", None)
+    if out:
+        return out
+    return args.file.with_name(args.file.stem + suffix + "." + fmt)
+
+
+def _submerge(args) -> Path:
+    """合并碎片/重复条目后导出(不改源文件,不建工作目录)。"""
+    from . import subtitle
+
+    parsed, fmt, label = _read_subtitle_in(args)
+    entries = parsed.entries
+    suffix = ""
+    if args.merge:
+        groups = subtitle.build_groups(
+            entries, args.cap, require_same_style=args.same_style
+        )
+        entries = subtitle.flatten(groups, join_with="\\N", smart=args.smart)
+        suffix = ".merged"
+        print(f"[{label}] {parsed.fmt} 原始 {len(parsed.entries)} 条 -> 合并后 {len(entries)} 条")
+    else:
+        print(f"[{label}] {parsed.fmt} {len(entries)} 条(未合并)")
+    if args.layout:
+        for e in entries:
+            e.text = subtitle.layout_convert(
+                e.text, space=args.layout_space, newline=args.layout_break
+            )
+    out_fmt = args.out_format or fmt
+    out = _out_path(args, suffix, out_fmt)
+    if out_fmt == "ass":
+        base = parsed if parsed.fmt == "ass" else subtitle.Parsed("ass", [])
+        out.write_text(subtitle.to_ass(base, entries), encoding="utf-8")
+    elif out_fmt == "srt":
+        out.write_text(subtitle.to_srt(entries), encoding="utf-8")
+    else:
+        out.write_text(subtitle.to_txt(entries), encoding="utf-8")
+    print(f"已写出:{out}")
+    return out
+
+
+def _layout(args) -> Path:
+    """字幕排版:空格/换行 -> \\N,时间轴与结构不变。"""
+    from . import subtitle
+
+    parsed, fmt, label = _read_subtitle_in(args)
+    body = subtitle.to_layout_text(parsed, space=args.space, newline=args.break_)
+    out_fmt = args.out_format or fmt
+    out = _out_path(args, ".layout", out_fmt)
+    out.write_text(body, encoding="utf-8")
+    print(f"[{label}] {len(parsed.entries)} 条 排版完成 -> {out}")
+    return out
+
+
+def _convert(args) -> Path:
+    """字幕格式转换(SRT/ASS/TXT),不改时间与文本。"""
+    from . import subtitle
+
+    parsed, _fmt, label = _read_subtitle_in(args)
+    entries = parsed.entries
+    out_fmt = args.out_format
+    if out_fmt == "ass":
+        base = parsed if parsed.fmt == "ass" else subtitle.Parsed("ass", [])
+        body = subtitle.to_ass(base, entries)
+    elif out_fmt == "srt":
+        body = subtitle.to_srt(entries)
+    else:
+        body = subtitle.to_txt(entries)
+    out = _out_path(args, "", out_fmt)
+    out.write_text(body, encoding="utf-8")
+    print(f"[{label}] {parsed.fmt} -> {out_fmt}:{len(entries)} 条 -> {out}")
+    return out
+
+
+
+def _proofread(args) -> Path:
+    """对工作目录已有译文做 AI 校对,写回 segments.json(时间轴与条数不变)。"""
+    work = args.work
+    seg_file = handoff.seg_path(work)
+    if not seg_file.exists():
+        raise SystemExit(f"错误:找不到 {seg_file},先运行 translate")
+    segs = handoff.read_segments(seg_file)
+    rows = [(s.text, s.tr) for s in segs if s.text and s.tr]
+    if not rows:
+        raise SystemExit("错误:没有可校对的译文(先运行 translate)")
+    if getattr(args, "dry_run", False):
+        print(f"将校对 {len(rows)} 条(未请求 AI)")
+        return seg_file
+    _backup(work, seg_file)  # 校对会覆盖译文,先备份
+    cfg = ai.resolve_config(args)
+    bs = max(1, min(1000, args.batch_size))
+    print(f"校对 {len(rows)} 条,每批 {bs} 条...")
+    out = ai.proofread(
+        rows, cfg, batch_size=bs, prompt=args.instruct, quiet=False
+    )
+    changed = 0
+    it = iter(out)
+    for s in segs:
+        if s.text and s.tr:
+            v = next(it)
+            if v and v != s.tr:
+                s.tr = v
+                changed += 1
+    handoff.write_segments(
+        segs, seg_file, comment=_load_meta(work).get("comment")
+    )
+    print(f"校对完成:共 {len(rows)} 条,改动 {changed} 条")
+    return seg_file
+
+
+def _usage(args) -> None:
+    """查看/清空本地记录的 AI token 用量。"""
+    from . import aiassist as _a
+
+    if args.clear:
+        _a.clear_usage()
+        print("已清空用量记录")
+        return
+    data = _a.load_usage()
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=1))
+    else:
+        print(_a.usage_summary(data))
+
+
+def _preset(args) -> None:
+    """管理 API 配置预设。"""
+    from . import aiassist as _a
+
+    cmd = getattr(args, "preset_cmd", None)
+    d = _a.load_presets()
+    if cmd in (None, "list"):
+        cur = d.get("current") or "(未选中)"
+        if not d["presets"]:
+            print("暂无预设。用 jpsub preset add <名> --api-base ... --api-key ... --model ...")
+            return
+        print(f"当前预设:{cur}")
+        for name, cfg in d["presets"].items():
+            mark = "*" if name == d["current"] else " "
+            print(
+                f" {mark} {name}: base={cfg.get('api_base') or '(空)'} "
+                f"model={cfg.get('model') or '(空)'} key={'***' if cfg.get('api_key') else '(空)'}"
+            )
+        return
+    if cmd == "add":
+        _a.set_preset(
+            args.name,
+            {"api_base": args.api_base, "api_key": args.api_key, "model": args.model},
+            select=not args.no_select,
+        )
+        print(f"已保存预设 {args.name}")
+        return
+    if cmd == "use":
+        if not _a.get_preset(args.name):
+            raise SystemExit(f"错误:不存在预设 {args.name}")
+        d = _a.load_presets()
+        d["current"] = args.name
+        _a.save_presets(d)
+        print(f"当前预设 -> {args.name}")
+        return
+    if cmd == "del":
+        if not _a.delete_preset(args.name):
+            raise SystemExit(f"错误:不存在预设 {args.name}")
+        print(f"已删除预设 {args.name}")
+        return
+    raise SystemExit(f"错误:未知 preset 子命令 {cmd}")
+
+
+def _glossary(args) -> None:
+    """从工作目录原文自动识别候选角色名并打印/追加。"""
+    from . import aiassist as _a
+
+    seg_file = handoff.seg_path(args.work)
+    if not seg_file.exists():
+        raise SystemExit(f"错误:找不到 {seg_file}")
+    segs = handoff.read_segments(seg_file)
+    cands = _a.auto_name_candidates([s.text for s in segs if s.text], top=args.top)
+    if not cands:
+        print("未识别出候选角色名")
+        return
+    print(f"候选角色名 {len(cands)} 个:")
+    for c in cands:
+        print(f"  {c}")
+    if args.append:
+        with open(args.append, "a", encoding="utf-8") as f:
+            for c in cands:
+                f.write(f"{c}=\n")
+        print(f"已追加到 {args.append}(请填写译名后保存)")
+
+
 def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
     """程序入口。argv 既可以是命令行参数列表,也可以是已解析的 Namespace。"""
     import sys
@@ -1575,6 +1998,8 @@ def run(argv: list[str] | argparse.Namespace | None = None) -> Path | None:
     _SUBS = {
         "extract", "render", "run", "status", "translate", "text",
         "mask", "maskapply", "voice", "edit", "home", "download", "upload",
+        "import", "submerge", "layout", "convert", "proofread", "usage",
+        "preset", "glossary",
     }
     if isinstance(argv, list) and argv and argv[0] not in _SUBS:
         from pathlib import Path as _Path
@@ -1641,6 +2066,22 @@ def _dispatch(args) -> Path | None:
         return _translate(args)
     if args.command == "text":
         return _translate_text(args)
+    if args.command == "import":
+        return _import_subtitle(args)
+    if args.command == "submerge":
+        return _submerge(args)
+    if args.command == "layout":
+        return _layout(args)
+    if args.command == "convert":
+        return _convert(args)
+    if args.command == "proofread":
+        return _proofread(args)
+    if args.command == "usage":
+        return _usage(args)
+    if args.command == "preset":
+        return _preset(args)
+    if args.command == "glossary":
+        return _glossary(args)
     if args.command == "status":
         _status(args)
         return None

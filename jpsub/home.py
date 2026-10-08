@@ -64,6 +64,11 @@ _OP = {
     "maskapply": "打码应用",
     "burn": "烧录",
     "upload": "投稿",
+    "proofread": "校对",
+    "import": "导入字幕",
+    "submerge": "合并字幕",
+    "layout": "排版字幕",
+    "convert": "转换字幕",
 }
 
 _PAGE = """<!doctype html><html lang=zh><meta charset=utf-8>
@@ -135,7 +140,21 @@ label.chk{display:flex;align-items:center;gap:4px;cursor:pointer}
 <button onclick=openCrop()>选择原视频字幕区域</button>
 <button onclick=cmd('translate',[])>续翻</button>
 <button onclick=cmd('translate',['--force'])>重翻</button>
+<button onclick=cmd('proofread',[])>AI 校对</button>
+<button onclick=showUsage()>翻译用量</button>
 </div></div>
+<div class=sec><b class=st>字幕文件</b>
+<span class=lbl>字幕文件</span>
+<input id=subfile type=text style="flex:1;min-width:140px" placeholder="本地字幕路径,如 D:\\sub.srt">
+<select id=subop>
+<option value=import>导入工作目录</option>
+<option value=submerge>合并碎片</option>
+<option value=layout>排版(空格换行→\\N)</option>
+<option value=convert>格式转换</option>
+</select>
+<button onclick=runSub()>执行</button>
+<span id=submsg style="color:#888"></span>
+</div>
 <div class=sec><b class=st>产出与分享</b>
 <div class=btns>
 <button onclick=cmd('render',[])>生成字幕</button>
@@ -329,6 +348,17 @@ $('vfile').onchange=async e=>{  // 同打码选图片:原生对话框选文件 -
   }catch(err){pickDone(old);alert('失败:'+err.message)}
   e.target.value='';
 };
+async function runSub(){
+  const f=$('subfile').value.trim();
+  if(!f)return alert('请先填写本地字幕文件路径');
+  const j=await post('/subtool',{op:$('subop').value,file:f,name:selName,extra:$('extra').value.trim()});
+  $('submsg').textContent=j.ok?'已提交':'失败:'+j.err;
+  if(!j.ok)alert('失败:'+j.err);else refreshJobs();
+}
+async function showUsage(){
+  const j=await(await fetch('/usage')).json();
+  alert(j.text||'暂无用量记录');
+}
 async function cmd(sub,flags){
   const j=await post('/cmd',{sub,flags,name:selName,
     url:$('url').value.trim(),path:localPath,
@@ -1048,6 +1078,14 @@ class _Home:
                         utils.http_json(self, {"ok": False, "err": str(e)})
                         return
                     utils.http_json(self, {"ok": True, "prefix": load_prefix(), **meta})
+                elif self.path == "/usage":
+                    # 翻译用量统计(持久化在 ~/.jpsub/usage.json)
+                    from . import aiassist
+
+                    utils.http_json(
+                        self,
+                        {"ok": True, "text": aiassist.usage_summary()},
+                    )
                 elif self.path == "/jobs":
                     for j in home.jobs:
                         if (
@@ -1231,6 +1269,39 @@ class _Home:
                             show=True,
                         )
                         utils.http_json(self, {"ok": True})
+                    elif self.path == "/subtool":
+                        # 字幕文件工具:导入/合并/排版/转换(不吃选中条目的工作目录,
+                        # 除 import 需要 --work)
+                        from pathlib import Path as _P
+
+                        op = str(body.get("op", "")).strip()
+                        f = _P(str(body.get("file", "")).strip())
+                        if not op or not str(f):
+                            utils.http_json(self, {"ok": False, "err": "缺少 op 或文件路径"})
+                            return
+                        if not f.is_file():
+                            utils.http_json(self, {"ok": False, "err": f"文件不存在:{f}"})
+                            return
+                        if op == "import":
+                            work = _work_of_name(home.root, str(body.get("name", "")).strip())
+                            if not work.is_dir():
+                                utils.http_json(
+                                    self, {"ok": False, "err": "请先在 ② 选中一个工作目录条目"}
+                                )
+                                return
+                            argv = ["import", str(f), "--work", str(work), *extra()]
+                        elif op in ("submerge", "layout", "convert"):
+                            argv = [op, str(f), *extra()]
+                        else:
+                            utils.http_json(self, {"ok": False, "err": f"未知字幕操作:{op}"})
+                            return
+                        home.spawn(
+                            f"{f.name} {_OP.get(op, op)}",
+                            [*exe, *argv],
+                            label=f"{f.name} {_OP.get(op, op)}",
+                            show=True,
+                        )
+                        utils.http_json(self, {"ok": True})
                     elif self.path == "/runcmd":
                         # 一次性自定义命令:整条命令 = jpsub 子命令 + 参数
                         import shlex as _shlex
@@ -1305,7 +1376,7 @@ class _Home:
                                     cli.parse_args([sub, str(p), *flags, *extra()]),
                                     op=_OP.get(sub, sub),
                                 )
-                        elif sub in ("render", "translate", "edit"):
+                        elif sub in ("render", "translate", "edit", "proofread"):
                             if not need(work.is_dir(), "请先在 ② 选择有工作目录的条目"):
                                 return
                             home.spawn(
