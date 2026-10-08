@@ -1,9 +1,9 @@
 schema: comet.native.v4
 name: panel-space-efficiency
 language: zh-CN
-phase: build
-status: active
-state_version: 7
+phase: archive
+status: done
+state_version: 8
 brief: brief.md
 document_constraints_version: 1
 shape_confirmation_hash: b6c1c287bea3f36675f9546cc6708bb9bc539ef961de71bbcd882843cc2888f9
@@ -17,16 +17,16 @@ workspace:
   target_branch: main
   finish: null
 loop:
-  stage: repairing
+  stage: done
   goal_cycle: 1
-  iteration: 3
+  iteration: 2
   attempt: 0
   retry_epoch: 0
   failed_iteration_count: 0
   no_progress_count: 0
   execution_failure_count: 0
   previous_unresolved_ids: []
-  next_action: submit-builder-candidate
+  next_action: null
 acceptance:
   - id: A1
     source: brief.md
@@ -143,6 +143,17 @@ history:
         candidate is required before checks can run again.
       truncated: false
     completed_at: 2026-09-29T15:51:33.358Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 0
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: 用户要求强制归档。实现已于 2026-09-29 并入 main（提交 05f696e=make panels clear，merge
+        57a821d），change 分支 comet/panel-space-efficiency 与 worktree 已不存在，本机
+        runtime 状态缺失导致 status 判为 invalid/blocked；未走完整独立验收，按用户明确要求直接登记归档。
+      truncated: false
+    completed_at: 2026-10-08T05:59:52.867Z
 history_overflow:
   dropped_entries: 0
   first_dropped_at: null
@@ -155,5 +166,5 @@ history_overflow:
     recovery: 0
 verification_result: pending
 verification_report: null
-archived: false
+archived: true
 created_at: 2026-09-29T15:19:23.951Z
