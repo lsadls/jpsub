@@ -11,7 +11,7 @@ import re
 import time
 import urllib.request
 
-from . import settings
+from . import aiassist, settings
 from .progress import Reporter
 
 def system_prompt(src: str | None = None, tgt: str | None = None, prompt_file: str | None = None) -> str:
@@ -153,6 +153,7 @@ def _chat(
                 content = data["choices"][0]["message"]["content"]
                 u = data.get("usage") or {}
                 _USAGE.append(u)  # 累计每次请求用量,供外部统计
+                aiassist.record_usage(u)  # 同时持久化,重启后仍可查询
                 if not quiet:  # 输出每次请求的 token 用量,便于排查异常消耗
                     print(
                         f"  tokens: prompt={u.get('prompt_tokens')} "
@@ -163,8 +164,9 @@ def _chat(
             except (KeyError, IndexError, TypeError):
                 raise ValueError(f"API 响应格式异常:{data}") from None
         except urllib.error.HTTPError as e:  # 读取响应体里的具体错误信息
-            detail = e.read().decode("utf-8", "replace")[:500]
-            e = RuntimeError(f"HTTP {e.code}: {detail or e.reason}")
+            detail = e.read().decode("utf-8", "replace")
+            # 非 JSON(尤其整页 HTML)时给出说明真实原因的可读提示
+            e = RuntimeError(aiassist.readable_http_error(e.code, detail, str(e.reason)))
             if _is_quota_error(e):  # 额度/余额耗尽,重试无意义
                 raise RuntimeError(f"API 额度不足,请充值或更换模型:{e}") from None
             if _is_censored_error(e):  # 内容审查,重试同一批无意义
@@ -242,7 +244,56 @@ def _parse_reply_lines(reply: str, count: int) -> list[str] | None:
     if numbered:
         if set(numbered) == set(range(1, count + 1)):
             return [numbered[i] for i in range(1, count + 1)]
+    # 兼容另两种返回协议(烤肉界面用):JSON 字符串数组 / %% 分隔。
+    # 与编号行同理,只有长度恰好等于 count 才可信,否则整批作废。
+    arr = _parse_json_array(reply)
+    if arr is not None and len(arr) == count:
+        return arr
+    parts = [z.strip() for z in re.split(r"%{2,}", reply)]
+    if count == 1 and len(parts) == 1 and parts[0]:
+        return parts
+    if len(parts) == count and all(parts):
+        return parts
     return None  # 编号缺失/跳号/合并:整批不可信,禁止按位置回填
+
+
+def _parse_json_array(reply: str) -> list[str] | None:
+    """从回复里抠出 JSON 字符串数组(允许前后有解释文字/代码块)。"""
+    text = re.sub(r"```[a-zA-Z]*\n?|```", "", reply)
+    start, end = text.find("["), text.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start : end + 1])
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, list) and all(isinstance(x, str) for x in data):
+        return data
+    return None
+
+
+_ECHO_MIN = 2  # 参与回显判定的最短原文长度(1 字词/标点回显无意义)
+
+
+def echo_ratio(srcs: list[str], got: list[str]) -> float:
+    """译文与原文(去空白/NFKC 后)完全相同的比例,用于判「模型回显原文」。
+
+    只看有效长度 >= _ECHO_MIN 的句子;返回参与统计句子的回显占比。"""
+    n = hit = 0
+    for s, z in zip(srcs, got):
+        if not s or not z or len(s.strip()) < _ECHO_MIN:
+            continue
+        n += 1
+        if normalize_text(s) == normalize_text(z):
+            hit += 1
+    return (hit / n) if n else 0.0
+
+
+def normalize_text(s: str) -> str:
+    """比对用归一化:NFKC + 去空白。"""
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFKC", s) if not c.isspace())
 
 
 def calc_concurrency(items: list[tuple[str, str]]) -> int:
@@ -350,6 +401,12 @@ def translate_texts_parallel(
             if got is None:
                 msgs.pop()  # 移除未得到有效回复的 user 消息,历史保持干净
                 return [UNTRANSLATED_MARK] * len(srcs)
+        # 回显检测:多数句与原文逐字相同说明模型没在翻译(原样复读),
+        # 整批判无效,绝不把原文当译文写进缓存。清理本轮未闭合的消息。
+        if echo_ratio(srcs, got) > 0.6:
+            while msgs and msgs[-1]["role"] != "system":
+                msgs.pop()
+            return [UNTRANSLATED_MARK] * len(srcs)
         if any(not z or is_junk_tr(z) for z in got):
             if not refuse_fix:
                 # 降级策略:不补问(补问轮整段重发历史),缺行句直接记未译留给续翻
@@ -473,21 +530,88 @@ def translate_texts_parallel(
     return results
 
 
+def proofread(
+    rows: list[tuple[str, str]],
+    cfg: dict,
+    *,
+    batch_size: int = 10,
+    prompt: str | None = None,
+    quiet: bool = False,
+    timeout: int = 60,
+) -> list[str]:
+    """对已有译文做校对:输入 [(原文, 当前译文)],返回等长校对后译文。
+
+    编号行协议:每批发「编号|原文|当前译文」,要求按「编号|校对后译文」返回,
+    编号一一对应、一行不能少;模型未返回的条目保留原译文。不改时间轴与条数。
+    """
+    requirement = prompt or "保持原意、人物语气和字幕长度,修正错译、漏译和不自然表达。"
+    system = (
+        "你是字幕校对专家。输入每行格式:编号|原文|当前译文。"
+        "输出每行格式:编号|校对后的译文,编号一一对应、顺序一致、一行不能少,"
+        "不要输出解释或思考过程。校对要求:" + requirement
+    )
+    out = [tr for _src, tr in rows]
+    total = len(rows)
+    for off in range(0, total, batch_size):
+        chunk = rows[off : off + batch_size]
+        lines = "\n".join(f"{i + 1}|{src}|{tr}" for i, (src, tr) in enumerate(chunk))
+        msgs = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": lines},
+        ]
+        try:
+            reply = _chat(msgs, cfg, temperature=0.0, quiet=True, timeout=timeout)
+        except Exception:
+            if not quiet:
+                print(f"  第 {off // batch_size + 1} 批校对失败,保留原译文")
+            continue
+        got = _parse_numbered_pairs(reply, len(chunk))
+        for i, v in enumerate(got):
+            if v:
+                out[off + i] = v
+    return out
+
+
+def _parse_numbered_pairs(reply: str, count: int) -> list[str | None]:
+    """解析「编号|译文」行,返回长度 count 的列表(缺失为 None)。"""
+    res: list[str | None] = [None] * count
+    for line in reply.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        num, _sep, txt = line.partition("|")
+        num = re.sub(r"[^0-9]", "", num)
+        if not num.isdigit():
+            continue
+        i = int(num) - 1
+        if 0 <= i < count and txt.strip():
+            res[i] = txt.strip()
+    return res
+
+
 def resolve_config(args) -> dict:
     """解析出完整配置 dict(api_base/api_key/model)。
 
     优先级:命令行参数 > 环境变量 > .env 里的变量。
     """
+    # 预设:命令行未给且环境变量未给时回退到 ~/.jpsub/api-presets.json 的选中项
+    preset = aiassist.get_preset(getattr(args, "preset", None)) or {}
     cfg = {
         "api_base": args.api_base
         or os.environ.get("JPSUB_API_BASE")
         or os.environ.get("OPENAI_BASE_URL")
+        or preset.get("api_base", "")
         or settings.API_BASE,
         "api_key": args.api_key
         or os.environ.get("JPSUB_API_KEY")
         or os.environ.get("OPENAI_API_KEY")
+        or preset.get("api_key", "")
         or settings.API_KEY,
-        "model": args.model or os.environ.get("JPSUB_MODEL") or settings.MODEL or "",
+        "model": args.model
+        or os.environ.get("JPSUB_MODEL")
+        or preset.get("model", "")
+        or settings.MODEL
+        or "",
     }
     if not cfg["api_base"]:
         raise SystemExit("缺少 API 端点:用 --api-base 或环境变量 JPSUB_API_BASE")

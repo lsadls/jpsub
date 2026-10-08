@@ -1,0 +1,203 @@
+schema: comet.native.v4
+name: port-karou-tools
+language: zh-CN
+phase: build
+status: active
+state_version: 3
+brief: brief.md
+document_constraints_version: 1
+shape_confirmation_hash: 91d4f0e2db5f6500f5292ee783d5d548111072a6739cb7a061b20265008cb33e
+spec_changes:
+  - capability: ai-assist
+    operation: create
+    source: specs/ai-assist/spec.md
+  - capability: subtitle-import
+    operation: create
+    source: specs/subtitle-import/spec.md
+workspace:
+  isolation: worktree
+  change_branch: comet/port-karou-tools
+  target_branch: main
+  finish: null
+loop:
+  stage: building
+  goal_cycle: 1
+  iteration: 1
+  attempt: 0
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: submit-builder-candidate
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1：导入一份无 BOM 的 Shift-JIS `.srt`，解析出的原文全部为正确日文、无 `U+FFFD`，条目数与时间块数一致。
+    result: pending
+    reason: null
+  - id: A2
+    source: brief.md
+    text: A2：导入一份同一句被拆成多条、后条以前条为前缀、间隔均 ≤3 秒的 `.srt`，这些条目合并为一条，`start` 取首条、`end`
+      取末条、文本取最完整者。
+    result: pending
+    reason: null
+  - id: A3
+    source: brief.md
+    text: A3：两条相邻字幕文本相同但间隔超过上限时保持独立，不被合并。
+    result: pending
+    reason: null
+  - id: A4
+    source: brief.md
+    text: A4：一条单行短名字（长度 ≤12）并入前组后立即封组，其后紧跟的无关台词不被并入前组。
+    result: pending
+    reason: null
+  - id: A5
+    source: brief.md
+    text: A5：对文本 `第一行 第二行\n第三行` 执行排版转换，结果为 `第一行\N第二行\N第三行`，且 `{\pos(1,2)}` 等标签内容不被替换。
+    result: pending
+    reason: null
+  - id: A6
+    source: brief.md
+    text: A6：把一份 SRT 导入为工作目录 `segments.json` 后执行 `jpsub render`，成功产出
+      `.ass`，字幕时间与文本与导入内容一致。
+    result: pending
+    reason: null
+  - id: A7
+    source: brief.md
+    text: A7：把合并去重后的字幕导出为 SRT，输出为带 BOM 的标准 SRT（`HH:MM:SS,mmm`），条目数与合并后组数一致。
+    result: pending
+    reason: null
+  - id: A8
+    source: brief.md
+    text: B1：术语表设定「拓也=拓也」后翻译，译文中该词按术语表统一，不被模型自由改写。
+    result: pending
+    reason: null
+  - id: A9
+    source: brief.md
+    text: B2：模型以 JSON 数组或 `%%` 分隔两种任一格式返回时，翻译结果均能正确解析并一一对应。
+    result: pending
+    reason: null
+  - id: A10
+    source: brief.md
+    text: B3：模型在一批中回显原文（未翻译）时，该批被判为无效并触发重试/缩小批处理，而不是把原文当译文写入。
+    result: pending
+    reason: null
+  - id: A11
+    source: brief.md
+    text: B4：一批翻译失败后，从失败批次继续，已完成批次的结果保留、不重复请求。
+    result: pending
+    reason: null
+  - id: A12
+    source: brief.md
+    text: C1：对已有译文执行 AI 校对后，时间轴与条目数不变，仅译文文本被修正；模型未返回的条目保留原译文。
+    result: pending
+    reason: null
+  - id: A13
+    source: brief.md
+    text: D1：翻译完成后可查询到累计的 prompt/completion token 用量与估算费用，且在程序重启后仍可查（持久化）。
+    result: pending
+    reason: null
+  - id: A14
+    source: brief.md
+    text: "D2：接口返回带 HTML 的错误页（如 502/503/504 或 Cloudflare
+      拦截页）时，用户看到的是说明真实原因的可读提示，而非整页 HTML 或 `HTTP 502: <html>…`。"
+    result: pending
+    reason: null
+  - id: A15
+    source: specs/ai-assist/spec.md
+    text: 保存并切换预设 - WHEN 保存两组预设「中转A」「官方B」并选择「官方B」执行翻译 - THEN 本次翻译使用「官方B」的
+      api_base/model，另一组不被使用
+    result: pending
+    reason: null
+  - id: A16
+    source: specs/ai-assist/spec.md
+    text: 自动识别高频角色名 - WHEN 原文中「拓也」多次单独成行出现且符合名字特征 - THEN 术语表候选包含「拓也」，而普通台词句不被当作候选
+    result: pending
+    reason: null
+  - id: A17
+    source: specs/ai-assist/spec.md
+    text: 从失败批次继续 - WHEN 10 批中第 4 批失败，用户触发续翻 - THEN 第 1–3 批不重新请求，翻译从第 4 批继续
+    result: pending
+    reason: null
+  - id: A18
+    source: specs/ai-assist/spec.md
+    text: 校对不改时间轴 - WHEN 对已有译文的字幕执行 AI 校对 - THEN 条目数与各条 start/end 时间轴不变，仅文本被修正 - AND
+      模型未返回的条目保留原译文
+    result: pending
+    reason: null
+  - id: A19
+    source: specs/ai-assist/spec.md
+    text: 重启后仍可查询用量 - WHEN 完成一次翻译后退出并重启程序 - THEN 仍能查询到此前累计的 token 用量与估算费用
+    result: pending
+    reason: null
+  - id: A20
+    source: specs/ai-assist/spec.md
+    text: HTML 错误页转为可读提示 - WHEN 接口返回状态 502 且响应体为 HTML 页面 - THEN
+      用户看到说明真实原因（网关/后端故障）的可读提示 - AND 提示中不出现整页 HTML 源码
+    result: pending
+    reason: null
+  - id: A21
+    source: specs/ai-assist/spec.md
+    text: 提示如实反映原因 - WHEN 接口返回 Cloudflare 拦截页（HTML 且含拦截特征） - THEN
+      提示指向「被拦截」，而非「额度不足」等无关原因
+    result: pending
+    reason: null
+  - id: A22
+    source: specs/subtitle-import/spec.md
+    text: 无 BOM 的日文 Shift-JIS SRT 正确导入 - WHEN 导入一个无 BOM、Shift-JIS 编码的 `.srt` 文件 -
+      THEN 解析出的原文全部为正确日文，无替换字符（`U+FFFD`） - AND 条目数与该 SRT 的时间块数一致
+    result: pending
+    reason: null
+  - id: A23
+    source: specs/subtitle-import/spec.md
+    text: 打字式逐帧 SRT 合并为整句 - WHEN 导入一个同一句台词被拆成多条的 `.srt`（后条以前条为前缀、间隔均 ≤ 3 秒） - THEN
+      这些条目被合并为一条，`start` 取首条、`end` 取末条、`text` 为最完整文本
+    result: pending
+    reason: null
+  - id: A24
+    source: specs/subtitle-import/spec.md
+    text: 间隔超过上限不合并 - WHEN 两条相邻字幕文本相同，但时间间隔超过上限 - THEN 两条保持独立，不被合并
+    result: pending
+    reason: null
+  - id: A25
+    source: specs/subtitle-import/spec.md
+    text: 名字行封组 - WHEN 中间存在一条单行短名字（长度 ≤ 12），其后紧跟与名字无关的新台词 - THEN 该名字并入前组后封组，新台词不被并入前组
+    result: pending
+    reason: null
+  - id: A26
+    source: specs/subtitle-import/spec.md
+    text: 空格与换行转 \N - WHEN 对一条文本为 `第一行 第二行\n第三行` 的条目执行排版转换 - THEN 结果为
+      `第一行\N第二行\N第三行` - AND `{\pos(1,2)}` 之类的标签内容不被替换
+    result: pending
+    reason: null
+  - id: A27
+    source: specs/subtitle-import/spec.md
+    text: 合并后导出 SRT - WHEN 把一份被合并去重的字幕导出为 SRT - THEN 输出为带 BOM 的标准 SRT，时间格式
+      `HH:MM:SS,mmm`，条目数与合并后组数一致
+    result: pending
+    reason: null
+  - id: A28
+    source: specs/subtitle-import/spec.md
+    text: 导入后可直接渲染 - WHEN 把一份 SRT 导入为工作目录 `segments.json`，随后执行 `jpsub render <工作目录>`
+      - THEN 成功产出 `.ass`，字幕时间与文本与导入内容一致
+    result: pending
+    reason: null
+builder_handoff: null
+blockers: []
+verification: null
+history: []
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pending
+verification_report: null
+archived: false
+created_at: 2026-10-08T06:01:20.002Z
