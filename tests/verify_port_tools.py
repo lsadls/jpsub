@@ -180,6 +180,24 @@ def test_echo_blocks_write() -> None:
           "回显批记未译,不写原文当译文")
 
 
+    # 缩小批处理:仅多行请求回显、单行请求正常翻译时,应逐句重试取到真译文
+    def echo_multiline(msgs, cfg, **_kw):
+        lines = [re.sub(r"^\d+\s*", "", ln) for ln in msgs[-1]["content"].splitlines()]
+        if len(lines) > 1:
+            return "\n".join(f"{i + 1} {t}" for i, t in enumerate(lines))
+        return "1 译_" + lines[0]
+
+    ai._chat = echo_multiline
+    try:
+        res2 = ai.translate_texts_parallel(
+            [(s, s) for s in srcs], {"api_base": "x", "api_key": "k", "model": "m"},
+            concurrency=1, quiet=True, group_batch=2)
+    finally:
+        ai._chat = saved
+    check("A10", all(v == "译_" + k.split("\n")[0] for k, v in res2.items()),
+          "回显批缩小批处理后取到逐句真译文")
+
+
 # ---------------------------------------------------------------- A11/B4 续翻
 def test_resume_skips_done() -> None:
     import jpsub.settings as st

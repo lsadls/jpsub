@@ -401,12 +401,15 @@ def translate_texts_parallel(
             if got is None:
                 msgs.pop()  # 移除未得到有效回复的 user 消息,历史保持干净
                 return [UNTRANSLATED_MARK] * len(srcs)
-        # 回显检测:多数句与原文逐字相同说明模型没在翻译(原样复读),
-        # 整批判无效,绝不把原文当译文写进缓存。清理本轮未闭合的消息。
+        # 回显检测:多数句与原文逐字相同说明模型没在翻译(原样复读)。
+        # 判无效后不直接放弃:缩小批处理,退化成单行逐句重试;单句仍回显才记未译,
+        # 绝不把原文当译文写进缓存。清理本轮未闭合的消息。
         if echo_ratio(srcs, got) > 0.6:
             while msgs and msgs[-1]["role"] != "system":
                 msgs.pop()
-            return [UNTRANSLATED_MARK] * len(srcs)
+            if len(srcs) == 1:
+                return [UNTRANSLATED_MARK]
+            return [_send(msgs, [s])[0] for s in srcs]
         if any(not z or is_junk_tr(z) for z in got):
             if not refuse_fix:
                 # 降级策略:不补问(补问轮整段重发历史),缺行句直接记未译留给续翻
