@@ -4,12 +4,8 @@
 
 格式为每行 `KEY = VALUE`，`#` 起为注释；值可直接写数字/布尔/字符串，也可用 Python 字面量（元组/字典/集合，如 `OUTLINE_COLOR = (255, 165, 0)`），字符串可跨行（三引号）。
 
-> 推荐 [千问 AI 平台](https://platform.qianwenai.com)：注册的免费额度够翻译几百个视频。
-
 ```python
-COOKIES_FROM_BROWSER = ""  # 登录/地区限制时填浏览器名,如 "chrome"(见命令行参考9)
-# https://platform.qianwenai.com
-# 注册的免费额度够几百个视频了
+COOKIES_FROM_BROWSER = ""  # 登录/地区限制时填浏览器名,如 "chrome"(见 cli.md 第 9 节)
 API_BASE = ""  # 例如 "https://maas.qianwenaiapi.com/compatible-mode/v1"
 API_KEY = ""   # 例如 "sk-xxx"
 MODEL = ""     # 例如 "qwen3.7-flash"

@@ -1,0 +1,12 @@
+# docs (2026-10-09)
+- batch.md 批量脚本流水线
+- cli.md 命令行子命令参考
+- edit.md 译文调整器
+- faq.md 常见问题
+- home.md 浏览器主页
+- install.md 源码运行准备
+- mask.md 打码与静音
+- perf.md 翻译性能调优
+- settings.md .env 配置详解
+- update.md 更新方式
+- upload.md B 站投稿

@@ -9,42 +9,42 @@
 ## 快速开始
 
 1. 到本仓库 **Releases** 页面下载打包好的程序，解压即用（已内置 ffmpeg / yt-dlp 和 Python 库，OCR 走在线 API，无本地模型）；
-2. 把 `.env.example` 复制改名为 `.env`，填入你的 AI 翻译与 OCR 配置（详见 [doc/settings.md](doc/settings.md)）；
-3. 开启代理软件的**全局模式**，双击运行程序自动打开浏览器主页（详见 [doc/home.md](doc/home.md)）。
+2. 把 `.env.example` 复制改名为 `.env`，填入你的 AI 翻译与 OCR 配置（详见 [docs/settings.md](docs/settings.md)）；
+3. 开启代理软件的**全局模式**，双击运行程序自动打开浏览器主页（详见 [docs/home.md](docs/home.md)）。
 
 ## 使用方法（主页）
 
-![主页](doc/home.png)
+![主页](docs/home.png)
 
 双击/运行不带参数的命令，会自动打开浏览器主页（也可以用 `jpsub home`）。页面分四部分，**所有操作都在页面上点按钮完成，不用敲命令**：
 
 - **① 操作**：输入 **sm 号或视频网址**点「下载并翻译」，或输入**本地视频路径**点「翻译(run)」；
 - **② output 列表**：自动列出 output/ 里的视频和 `.jpsub` 工作目录，点击行选中，对选中项可「编辑 / 打码 / 烧录 / 续翻 / 重翻」等；
-- **③ 批量脚本**：每行一条任务，点「运行脚本」批量执行（详见 [doc/batch.md](doc/batch.md)）；
+- **③ 批量脚本**：每行一条任务，点「运行脚本」批量执行（详见 [docs/batch.md](docs/batch.md)）；
 - **④ 任务**：所有后台任务的实时进度，点击选中后可「终止选中」。
 
-翻译完成（除烧录模式外）会自动打开**译文调整器**让你确认/修正译文，点 **生成字幕** 输出字幕（格式单选：必剪 `.bcc` / `.ass`，详见 [doc/edit.md](doc/edit.md)）。
+翻译完成（除烧录模式外）会自动打开**译文调整器**让你确认/修正译文，点 **生成字幕** 输出字幕（格式单选：必剪 `.bcc` / `.ass`，详见 [docs/edit.md](docs/edit.md)）。
 
-![译文调整器](doc/edit.png)
+![译文调整器](docs/edit.png)
 
-还内置**打码系统**：网页上框选区域即可给画面打马赛克/遮挡/静音（详见 [doc/mask.md](doc/mask.md)）。
+还内置**打码系统**：网页上框选区域即可给画面打马赛克/遮挡/静音（详见 [docs/mask.md](docs/mask.md)）。
 
-![打码选取器](doc/mask.png)
+![打码选取器](docs/mask.png)
 
-更多细节与常用操作表见 [doc/home.md](doc/home.md)。
+更多细节与常用操作表见 [docs/home.md](docs/home.md)。
 
 ## 文档目录
 
 | 文档                               | 内容                                         |
 | ---------------------------------- | -------------------------------------------- |
-| [doc/update.md](doc/update.md)     | 更新方式                                     |
-| [doc/install.md](doc/install.md)   | 源码运行准备（全局代理、下载 ffmpeg/yt-dlp） |
-| [doc/settings.md](doc/settings.md) | `.env` 配置详解（AI 翻译与 OCR）      |
-| [doc/home.md](doc/home.md)         | 主页各分区与按钮详细说明                     |
-| [doc/edit.md](doc/edit.md)         | 译文调整器（浏览器可视化改译文）             |
-| [doc/mask.md](doc/mask.md)         | 打码（马赛克/遮挡/静音）                     |
-| [doc/upload.md](doc/upload.md)     | B 站投稿（biliup）                |
-| [doc/batch.md](doc/batch.md)       | 批量模式（-s 脚本）                          |
-| [doc/perf.md](doc/perf.md)         | 性能调优（翻译 token 与耗时）                |
-| [doc/cli.md](doc/cli.md)           | 命令行参考（进阶）                           |
-| [doc/faq.md](doc/faq.md)           | 常见问题                                     |
+| [docs/update.md](docs/update.md)     | 更新方式                                     |
+| [docs/install.md](docs/install.md)   | 源码运行准备（全局代理、下载 ffmpeg/yt-dlp） |
+| [docs/settings.md](docs/settings.md) | `.env` 配置详解（AI 翻译与 OCR）      |
+| [docs/home.md](docs/home.md)         | 主页各分区与按钮详细说明                     |
+| [docs/edit.md](docs/edit.md)         | 译文调整器（浏览器可视化改译文）             |
+| [docs/mask.md](docs/mask.md)         | 打码（马赛克/遮挡/静音）                     |
+| [docs/upload.md](docs/upload.md)     | B 站投稿（biliup）                |
+| [docs/batch.md](docs/batch.md)       | 批量模式（-s 脚本）                          |
+| [docs/perf.md](docs/perf.md)         | 性能调优（翻译 token 与耗时）                |
+| [docs/cli.md](docs/cli.md)           | 命令行参考（进阶）                           |
+| [docs/faq.md](docs/faq.md)           | 常见问题                                     |
