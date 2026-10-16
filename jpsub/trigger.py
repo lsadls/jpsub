@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageChops, ImageStat
 
 from .frames import mask_diff
@@ -42,18 +41,21 @@ def _removed_stats(prev: Image.Image, cur: Image.Image) -> tuple[float, float]:
     return removed / base, removed
 
 
+def _nonzero(img: Image.Image) -> int:
+    """掩膜里非零(即文字)像素数。"""
+    hist = img.histogram()
+    return sum(hist[1:]) if len(hist) > 1 else 0
+
+
 def _overlap_ratio(prev: Image.Image, cur: Image.Image) -> float:
     """两掩膜文字像素的交叠率:交集 / 较大一方的笔画总量(0-1)。
 
     同一页字幕的两次截图文字几乎完全重合(动的只有小人动画等小区域),
     交叠率高;真正换页时旧文字消失,交叠率低。
     """
-    import numpy as np
-
-    a = np.asarray(prev) > 0
-    b = np.asarray(cur) > 0
-    inter = int((a & b).sum())
-    bigger = max(int(a.sum()), int(b.sum()))
+    # 掩膜为 0/非零:逐像素取小,非零处即两图都为非零 = 交集
+    inter = _nonzero(ImageChops.darker(prev, cur))
+    bigger = max(_nonzero(prev), _nonzero(cur))
     return inter / bigger if bigger else 0.0
 
 
@@ -107,7 +109,7 @@ def select_keyframes(
                 rel, abs_removed = _removed_stats(ref[i - 1], ref[i])
                 # 前帧掩膜过小(<800px)说明 ref 里几乎没有文字、只有雪粒/火花
                 # 之类的噪声:消失/交叠统计全是噪声,不可信,不在此切分。
-                prev_px = int((np.asarray(ref[i - 1]) > 0).sum())
+                prev_px = _nonzero(ref[i - 1])
                 if (
                     rel >= 0.5
                     and abs_removed >= 1.5

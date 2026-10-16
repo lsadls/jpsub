@@ -5,6 +5,21 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 核心依赖精简为 `pysubs2` + `Pillow`，相似度合并改用标准库 `difflib.SequenceMatcher`，移除 `rapidfuzz`（pyproject.toml）
+- 新增可选组 `jpsub[auto]`（`numpy`、`tqdm`）供自动去人肤色检测；`tqdm` 仅提供进度条，缺失时静默降级（pyproject.toml、jpsub/mask.py）
+- B 站投稿改为**内置**：上传接口是自 `biliup` 裁剪的 vendored 实现（`jpsub/bili.py`）；原可选组 `jpsub[bili]`（引入 `biliup`）随之移除，其重传递依赖（streamlink / yt-dlp / trio / rsa / lxml / pycountry 等约 20 个包）不再进入依赖闭包，`requests`、`aiohttp` 转为必装依赖（pyproject.toml、jpsub/bili.py、jpsub/upload.py）
+- 未装 `auto` 时 `jpsub mask --auto` 给出可执行的安装提示，其余打码功能不受影响（jpsub/mask.py）
+- `frames.strip_static` 与 `trigger.py` 的像素统计改用标准库实现（`bytes.translate` 大整数累加、`ImageChops`/`histogram`），移除主流程对 `numpy` 的硬依赖，结果与旧实现逐像素一致（jpsub/frames.py、jpsub/trigger.py）
+- `tests/verify_deman.py`（自动去人验收）需在装了 `jpsub[auto]` 的环境运行（tests/verify_deman.py）
+
+### Added
+
+- **投稿实现 vendored 进仓库**（`jpsub/bili.py`，约 470 行）：以 PyPI `biliup 1.2.9` 为基线裁剪，保留 cookies 登录 / upos 分片并发上传 / 提交 / 封面，移除密码与短信登录（`rsa` 依赖的来源）、cos/kodo 线路、合集管理与命令行封装。上游 B 站接口变更后的移植流程见 [docs/bili.md](docs/bili.md)。
+- **上游同步工具**（`tools/sync_biliup.py`）：从 PyPI 拉取指定版本 `biliup`，按「保留 / 移除 / 有意改写」三类裁剪清单做 AST 比对，输出结构化差异报告，指导接口变更后的移植。
+- **一致性验收**：`tests/verify_bili_vendor.py`（与上游 AST 逐节点比对：保留项零漂移、裁剪项确已移除）、`tests/verify_bili_parity.py`（HTTP 层对拍：桩掉 requests/aiohttp，逐项比对登录/上传/提交的请求序列与分片边界）、`tests/verify_upload_local.py`（阻断 `biliup` 模块后导入 `jpsub.upload`，确保运行时不再依赖该包）、`tests/smoke_upload_cli.py`（投稿 CLI 入口 smoke）；基线上游文件固化于 `tests/fixtures/bili_webup_1.2.9.py`。
+
 ## [14] - 2026-10-09
 
 ### Added

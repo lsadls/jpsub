@@ -15,6 +15,7 @@ logs/
 cookies.json
 .python-version
 .codegraph/
+.ruff_cache/
 # >>> Comet managed project state >>>
 !/.comet/
 /.comet/*

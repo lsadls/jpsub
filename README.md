@@ -43,7 +43,7 @@
 | [docs/home.md](docs/home.md)         | 主页各分区与按钮详细说明                     |
 | [docs/edit.md](docs/edit.md)         | 译文调整器（浏览器可视化改译文）             |
 | [docs/mask.md](docs/mask.md)         | 打码（马赛克/遮挡/静音）                     |
-| [docs/upload.md](docs/upload.md)     | B 站投稿（biliup）                |
+| [docs/upload.md](docs/upload.md)     | B 站投稿（内置上传实现）           |
 | [docs/batch.md](docs/batch.md)       | 批量模式（-s 脚本）                          |
 | [docs/perf.md](docs/perf.md)         | 性能调优（翻译 token 与耗时）                |
 | [docs/cli.md](docs/cli.md)           | 命令行参考（进阶）                           |

@@ -34,3 +34,15 @@ yt-dlp.exe
 ```
 
 也可以不用放进 `bin`，改为安装到系统并加入 PATH，二选一即可。
+
+## 3. 安装可选依赖（按需）
+
+核心库（Pillow、pysubs2、requests、aiohttp）随程序安装；下面按实际用途选装，不装也能跑其余功能：
+
+```bash
+pip install "jpsub[auto]"   # 自动去人（肤色检测）:引入 numpy;tqdm 只加进度条
+```
+
+- **不装 `auto`**：`jpsub mask --auto` 会提示安装；其余打码（手工选取器、`maskapply`、敏感词打码）、下载 / OCR / 翻译 / 字幕全部可用；
+- B 站投稿（`jpsub upload`）**已内置**，无需额外安装：上传接口是自 [biliup](https://github.com/biliup/biliup) 裁剪的 vendored 实现（`jpsub/bili.py`），只保留 cookies 登录 + upos 上传，去掉了 streamlink / yt-dlp / rsa 等重传递依赖。详见 [bili.md](bili.md)；
+- 相似度合并用标准库 `difflib`，无需额外依赖。

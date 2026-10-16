@@ -1,5 +1,6 @@
-# docs (2026-10-09)
+# docs (2026-10-16)
 - batch.md 批量脚本流水线
+- bili.md B 站投稿实现与上游同步
 - cli.md 命令行子命令参考
 - edit.md 译文调整器
 - faq.md 常见问题

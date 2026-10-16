@@ -17,8 +17,6 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
-
 from . import settings, utils
 
 
@@ -1014,6 +1012,21 @@ _SKIN_TRACK_IOU = 0.3  # 相邻采样秒归入同一区间的矩形 IoU 下限
 _SKIN_EFFECT = "color:000000"  # 与手工基线一致:纯黑覆盖
 
 
+def _require_numpy():
+    """取 numpy;未安装时给出可执行的安装指引。
+
+    自动去人是可选依赖(`jpsub[auto]`),其余打码功能(手工选取器、
+    maskapply、敏感词打码)只用 Pillow,不装 numpy 也能跑。
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        raise SystemExit(
+            "自动去人需要 numpy(可选依赖)。安装:`pip install \"jpsub[auto]\"` 或 `pip install numpy`"
+        ) from None
+    return np
+
+
 def _skin_mask(rgb) -> np.ndarray:
     """肤色掩膜:RGB 规则与 YCbCr 规则取并集(任一命中即算肤色)。
 
@@ -1051,6 +1064,7 @@ def _skin_regions(rgb) -> list[tuple[int, int, int, int]]:
     颜色像皮肤但呈斑驳纹理的大面积背景排除掉,只留下成片平滑的肤色区域。
     """
     h, w = rgb.shape[:2]
+    np = _require_numpy()
     m = _skin_mask(rgb)
     lum = 0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     grad = np.zeros_like(lum)
@@ -1162,6 +1176,7 @@ def _sample_frames(video: Path, w: int, h: int, fps: float):
         "-",
     ]
     n = w * h * 3
+    np = _require_numpy()  # 自动去人的可选依赖:入口处一次性校验
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdout is not None
     try:
@@ -1193,9 +1208,12 @@ def detect_masks(video: Path, fps: float = 1.0, show_progress: bool = True) -> l
     total = int(video_duration(video) * fps) if show_progress else 0
     bar = None
     if show_progress:
-        from tqdm import tqdm
-
-        bar = tqdm(total=total, unit="帧", desc="自动去人检测")
+        try:
+            from tqdm import tqdm
+        except ImportError:  # 进度条非功能前提:缺 tqdm 时静默降级
+            tqdm = None
+        if tqdm is not None:
+            bar = tqdm(total=total, unit="帧", desc="自动去人检测")
     for idx, rgb in _sample_frames(video, w, h, fps):
         cur: list[int] = []
         for box in _skin_regions(rgb):

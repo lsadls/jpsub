@@ -2,6 +2,8 @@
 
 把工作目录成品投稿到 B 站:打码视频(若有)优先于原视频,标题默认 info.txt 原标题(弹窗可改),封面 `cover.jpg` 自动上传。
 
+> 投稿已内置（`jpsub/bili.py`，自 biliup 裁剪的 vendored 实现），无需额外安装依赖；仅登录需要外部二进制 `biliup-rs`（见下）。实现细节与上游同步流程见 [bili.md](bili.md)。
+
 ## 一次性登录
 
 ```bash

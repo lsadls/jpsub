@@ -8,15 +8,16 @@ version = "2.0"
 description = "日语视频(底部短句 / 全屏打字机长文) -> 中文外挂 ASS 字幕(外部 OCR + 外部翻译)"
 requires-python = ">=3.14"
 dependencies = [
-  "numpy>=1.26",
   "pysubs2>=1.9",
   "Pillow>=10",
-  "rapidfuzz>=3",
-  "tqdm>=4",
-  "biliup>=0.3.10",
+  # B 站投稿(jpsub/bili.py,自 biliup 裁剪的 vendored 实现)所需的 HTTP 栈。
+  "requests>=2.32.3",
+  "aiohttp>=3.9.5",
 ]
 
 [project.optional-dependencies]
+# 自动去人(肤色检测)需要 numpy 做逐帧像素运算;tqdm 只提供进度条,缺失会静默降级。
+auto = ["numpy>=1.26", "tqdm>=4"]
 dev = ["pytest>=8"]
 
 [project.scripts]

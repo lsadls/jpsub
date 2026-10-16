@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+from array import array
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -247,6 +248,34 @@ def text_residual_fp(image: Image.Image) -> bytes:
     return fp.point(lambda p: p // 16).tobytes()
 
 
+def _pixel_hits(masks: list[Image.Image]) -> array:
+    """逐像素统计各掩膜为 255 的帧数(等价 numpy `stack.mean()` 的分子)。
+
+    掩膜是纯 0/255 的 L 图(见 `text_mask`/`core_mask`),把每帧压成 0/1 后当
+    一个大整数整体相加即可;单字节槽最多容纳 255 帧,故每 255 帧把进位展开到
+    32 位数组。纯标准库实现(不依赖 numpy),与 numpy 参考实现逐像素一致。
+    """
+    size = masks[0].size
+    if any(m.size != size for m in masks):
+        raise ValueError("strip_static: 掩膜尺寸不一致")
+    one = bytes([0] * 255 + [1])          # 0/255 -> 0/1;纯二值输入,中间值会被忽略
+    n_px = size[0] * size[1]
+    total = array("I", bytes(n_px * 4))
+    pending = 0
+    count = 0
+    for m in masks:
+        pending += int.from_bytes(m.tobytes().translate(one), "little")
+        count += 1
+        if count == 255:                  # 单字节槽将满:展开进位后重新计数
+            flat = pending.to_bytes(n_px, "little")
+            total = array("I", (a + b for a, b in zip(total, flat)))
+            pending, count = 0, 0
+    if count:
+        flat = pending.to_bytes(n_px, "little")
+        total = array("I", (a + b for a, b in zip(total, flat)))
+    return total
+
+
 def strip_static(masks: list[Image.Image], ratio: float = 0.8) -> list[Image.Image]:
     """剔除全程静止的像素(如字幕区内固定水印)。
 
@@ -256,13 +285,11 @@ def strip_static(masks: list[Image.Image], ratio: float = 0.8) -> list[Image.Ima
     """
     if len(masks) < 2:
         return masks
-    import numpy as np
-
-    stack = np.stack([np.asarray(m, dtype=np.uint16) for m in masks])
-    static = (stack.mean(axis=0) > ratio * 255).astype(np.uint8) * 255
-    if not static.any():
+    thr = ratio * len(masks)              # 命中帧数阈值(mean > ratio*255 的等价式)
+    static = bytes(255 if c > thr else 0 for c in _pixel_hits(masks))
+    if not any(static):
         return masks
-    static_img = Image.fromarray(static, mode="L")
+    static_img = Image.frombytes("L", masks[0].size, static)
     return [ImageChops.subtract(m, static_img) for m in masks]
 
 

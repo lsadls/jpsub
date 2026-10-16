@@ -59,6 +59,8 @@ masks.json 为 JSON 数组，每条含起止秒、像素坐标与效果，可直
 
 ## 自动去人（肤色检测）
 
+> 该功能属于可选依赖（`jpsub[auto]`，引入 numpy）。未安装时执行 `--auto` 会提示安装；其余打码功能不受影响。
+
 `jpsub mask output/sm43168834.mp4 --auto` 非交互执行，按固定粒度（每秒 1 帧）抽样，用肤色判据 + 像素分布判据定位画面里的真人肤色区域，结果写工作目录 `.jpsub/masks.auto.json`（与手工 `masks.json`、`masks.sensitive.json` 相互独立），再用 `jpsub maskapply <视频> .jpsub/masks.auto.json` 应用。
 
 - 肤色掩膜由 RGB 规则与 YCbCr 规则**取并集**得到，任一规则判为肤色即视为肤色像素；两条规则要求像素偏暖（R 通道不低于 G、B），可覆盖深色、阴影与暖色调皮肤，同时排除中性灰与冷色区域；

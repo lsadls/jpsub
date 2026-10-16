@@ -559,7 +559,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--root", type=Path, default=None, help="产物根目录(默认 <项目根>/output)"
     )
 
-    up = sub.add_parser("upload", help="把工作目录成品投稿到 B 站(biliup)")
+    up = sub.add_parser("upload", help="把工作目录成品投稿到 B 站")
     up.add_argument("work", type=Path, help="工作目录(含视频/info.txt/cover.jpg)")
     up.add_argument("--title", help="稿件标题(默认 info.txt 原标题的 AI 译文)")
     up.add_argument("--desc", help="稿件简介(默认 info.txt 组装)")

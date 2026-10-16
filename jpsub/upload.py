@@ -1,4 +1,4 @@
-"""B 站投稿:工作目录成品(打码视频>原视频)+ AI 翻译标题 → biliup 上传提交。
+"""B 站投稿:工作目录成品(打码视频>原视频)+ AI 翻译标题 → 提交 B 站(jpsub/bili.py,自 biliup 裁剪的 vendored 实现)。
 
 登录:一次性 `biliup-rs login` 扫码,cookies.json 放 settings.BILIUP_COOKIE
 (默认 ~/.jpsub/cookies.json);token 过期由调用方提示重新登录。
@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import settings, utils
+from .bili import BiliBili, Data
 
 
 def upload_json(work: Path) -> Path:
@@ -184,8 +185,6 @@ def upload(
 
     video_path = _find_upload_video(work)
     print(f"投稿视频:{video_path}")
-
-    from biliup.plugins.bili_webup import BiliBili, Data
 
     data = Data()
     data.copyright = 2  # 转载

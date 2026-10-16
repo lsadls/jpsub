@@ -223,7 +223,7 @@ TARGET_LANG = "简体中文"   # 目的语言
 .venv\Scripts\jpsub.exe upload output/sm114514.jpsub --delay 3600
 ```
 
-用 biliup 把工作目录成品（打码视频 > 原视频）上传并提交稿件：标题默认 info.txt 原标题（可 `--title`/`--desc` 覆盖，支持标题前缀）、简介由 info.txt 组装、标签取 info 标签行（兜底 `UPLOAD_TAGS`）、封面 `cover.jpg` 自动上传、转载 URL 自动填、`--delay` 定时发布。一次性登录用 `jpsub upload <目录> --login`（代跑 biliup-rs 扫码）或 `biliup login` 后把 cookies.json 放 `~/.jpsub/`。BV 号写回工作目录 `upload.json`，重复投稿先查此文件拦截。直接传**裸条目名**也可以，自动按 output/ 下的条目查找。详见 [upload.md](upload.md)。
+把工作目录成品（打码视频 > 原视频）上传并提交稿件（上传接口为内置的 `jpsub/bili.py`，自 biliup 裁剪）：标题默认 info.txt 原标题（可 `--title`/`--desc` 覆盖，支持标题前缀）、简介由 info.txt 组装、标签取 info 标签行（兜底 `UPLOAD_TAGS`）、封面 `cover.jpg` 自动上传、转载 URL 自动填、`--delay` 定时发布。一次性登录用 `jpsub upload <目录> --login`（代跑 biliup-rs 扫码）或 `biliup login` 后把 cookies.json 放 `~/.jpsub/`。BV 号写回工作目录 `upload.json`，重复投稿先查此文件拦截。直接传**裸条目名**也可以，自动按 output/ 下的条目查找。详见 [upload.md](upload.md)。
 
 > `mask` / `maskapply` 的视频参数同样支持直接传工作目录或裸条目名，自动定位其中的视频。
 
